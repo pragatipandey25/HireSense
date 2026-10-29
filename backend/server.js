@@ -20,7 +20,10 @@ import { notFound, errorHandler } from './middleware/errorMiddleware.js';
 
 dotenv.config();
 
-connectDB();
+// Initialize DB connection in background
+connectDB().catch((err) => {
+  console.warn('Initial DB connection attempt:', err.message);
+});
 
 // Optional: Seed initial admin account ONLY if explicit env credentials are provided
 mongoose.connection.once('open', async () => {
@@ -60,7 +63,7 @@ app.use(helmet({
   contentSecurityPolicy: false, // Disabled for pure REST API
 }));
 
-// 2. CORS — Restrict origins safely (supporting localhost and 127.0.0.1 for local dev)
+// 2. CORS — Restrict origins safely (supporting localhost, 127.0.0.1, Vercel deployments, & custom CLIENT_URL)
 const allowedOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
@@ -77,8 +80,12 @@ if (process.env.CLIENT_URL) {
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow non-browser requests (e.g. mobile apps, curl, tests) or matching origins
-    if (!origin || allowedOrigins.includes(origin)) {
+    // Allow non-browser requests, allowed origins, and any preview/production Vercel deployments
+    if (
+      !origin ||
+      allowedOrigins.includes(origin) ||
+      /\.vercel\.app$/.test(origin)
+    ) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -91,8 +98,8 @@ app.use(cors({
 
 // 3. Rate Limiting — Prevent brute force / abuse
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 500, // generous limit for normal dashboard navigation
+  windowMs: 15 * 60 * 1000,
+  max: 500,
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again after 15 minutes.',
@@ -103,7 +110,7 @@ const apiLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100, // 100 attempts per 15 min window (prevents locking out during testing)
+  max: 100,
   message: {
     success: false,
     message: 'Too many authentication attempts, please try again after 15 minutes.',
@@ -114,7 +121,7 @@ const authLimiter = rateLimit({
 
 const aiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 60, // Protect expensive AI endpoints
+  max: 60,
   message: {
     success: false,
     message: 'AI analysis rate limit exceeded. Please try again after 15 minutes.',
@@ -138,7 +145,19 @@ app.use(sanitizeAll);
 // 6. HTTP Parameter Pollution protection
 app.use(hpp());
 
-// Routes
+// 7. Ensure DB connection is active before processing requests (critical for serverless cold starts)
+app.use(async (req, res, next) => {
+  if (mongoose.connection.readyState < 1) {
+    try {
+      await connectDB();
+    } catch {
+      // Let routes or error handler catch if connection cannot be established
+    }
+  }
+  next();
+});
+
+// Routes — mounted with /api prefix
 app.use('/api/auth', authRoutes);
 app.use('/api/resumes', resumeRoutes);
 app.use('/api/jobs', jobRoutes);
@@ -147,7 +166,16 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/analysis', analysisRoutes);
 
-app.get('/', (req, res) => {
+// Serverless fallback aliases (in case proxy strips /api prefix)
+app.use('/auth', authRoutes);
+app.use('/resumes', resumeRoutes);
+app.use('/jobs', jobRoutes);
+app.use('/applications', applicationRoutes);
+app.use('/dashboard', dashboardRoutes);
+app.use('/admin', adminRoutes);
+app.use('/analysis', analysisRoutes);
+
+app.get(['/', '/api'], (req, res) => {
   res.status(200).json({
     status: 'ok',
     app: 'HireSense AI',
@@ -163,7 +191,11 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`🚀 HireSense AI server running on port ${PORT}`);
-  console.log('🔒 Security middleware enabled: Helmet, CORS, RateLimiter, Sanitizer, HPP');
-});
+if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`🚀 HireSense AI server running on port ${PORT}`);
+    console.log('🔒 Security middleware enabled: Helmet, CORS, RateLimiter, Sanitizer, HPP');
+  });
+}
+
+export default app;

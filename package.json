@@ -1,0 +1,12 @@
+{
+  "name": "hiresense-ai",
+  "version": "2.0.0",
+  "private": true,
+  "description": "HireSense AI - Intelligent Recruitment & Candidate Screening Platform",
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "lint": "npm --prefix frontend run lint",
+    "test": "npm --prefix backend test"
+  }
+}

@@ -1,16 +1,24 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const uploadsDir = path.join(__dirname, '..', 'uploads');
+// On Vercel / serverless environments, the root filesystem is read-only. Use os.tmpdir().
+const uploadsDir = process.env.VERCEL
+  ? path.join(os.tmpdir(), 'hiresense-uploads')
+  : path.join(__dirname, '..', 'uploads');
 
 // Ensure uploads directory exists
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (err) {
+  console.warn('Uploads directory initialization notice:', err.message);
 }
 
 const storage = multer.diskStorage({

@@ -1,7 +1,9 @@
 import axios from 'axios';
 import { isTokenExpired } from '../utils/jwt';
 
-const rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const rawApiUrl =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api');
 const API_URL = rawApiUrl.replace(/\/+$/, '');
 
 const api = axios.create({
