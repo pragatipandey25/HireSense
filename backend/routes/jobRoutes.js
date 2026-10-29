@@ -9,31 +9,32 @@ import {
   getJobById,
   updateJob,
   deleteJob,
-  closeJob
+  closeJob,
+  reopenJob
 } from '../controllers/jobController.js';
 
 const router = express.Router();
 
 router.use(protect);
 
-// Employer: Create job
+// Employer/Admin: Create job
 router.post(
   '/',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   [
-    body('title', 'Job title is required').notEmpty(),
-    body('description', 'Job description is required').notEmpty(),
-    body('experience', 'Experience requirement is required').notEmpty(),
-    body('education', 'Education requirement is required').notEmpty(),
-    body('location', 'Location is required').notEmpty(),
-    body('company', 'Company name is required').notEmpty(),
-    body('deadline', 'Application deadline is required').isDate()
+    body('title', 'Job title is required').trim().notEmpty(),
+    body('description', 'Job description is required').trim().notEmpty(),
+    body('experience', 'Experience requirement is required').trim().notEmpty(),
+    body('education', 'Education requirement is required').trim().notEmpty(),
+    body('location', 'Location is required').trim().notEmpty(),
+    body('company', 'Company name is required').trim().notEmpty(),
+    body('deadline', 'Application deadline is required').isISO8601()
   ],
   validateRequest,
   createJob
 );
 
-// Candidate: Browse active jobs
+// Browse active jobs (all authenticated roles)
 router.get(
   '/',
   authorizeRoles('candidate', 'employer', 'admin'),
@@ -43,7 +44,7 @@ router.get(
 // Employer: Get my jobs
 router.get(
   '/employer',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   getEmployerJobs
 );
 
@@ -56,23 +57,29 @@ router.get(
 // Employer: Update job
 router.put(
   '/:id',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   updateJob
 );
 
 // Employer: Delete job
 router.delete(
   '/:id',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   deleteJob
 );
 
 // Employer: Close job
 router.patch(
   '/:id/close',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   closeJob
 );
 
-export default router;
+// Employer: Reopen job
+router.patch(
+  '/:id/reopen',
+  authorizeRoles('employer', 'admin'),
+  reopenJob
+);
 
+export default router;

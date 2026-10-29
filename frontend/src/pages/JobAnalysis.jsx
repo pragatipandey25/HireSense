@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { getJobById } from "../services/jobService";
 import {
@@ -6,10 +6,11 @@ import {
   getJobRankings,
   updateRankingStatus,
   getEmployerAnalysisAnalytics,
+  exportJobRankingsCSV,
 } from "../services/analysisService";
+import { uploadBulkResumes } from "../services/resumeService";
 import RankingCard from "../components/RankingCard";
 import FilterBar from "../components/FilterBar";
-import SkeletonLoader from "../components/SkeletonLoader";
 import LoadingSpinner from "../components/LoadingSpinner";
 import Navbar from "../components/Navbar";
 import {
@@ -37,58 +38,79 @@ const JobAnalysis = () => {
   const [filteredRankings, setFilteredRankings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [analytics, setAnalytics] = useState(null);
   const [activeTab, setActiveTab] = useState("rankings");
   const [sortBy, setSortBy] = useState("rank");
   const [sortOrder, setSortOrder] = useState("asc");
 
-  useEffect(() => {
-    loadData();
-  }, [id]);
+  // Bulk resume upload modal state
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [bulkFiles, setBulkFiles] = useState([]);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkSummary, setBulkSummary] = useState(null);
 
-  const loadData = async () => {
+  const loadRankings = useCallback(
+    async (filters = {}, isMounted = { current: true }) => {
+      try {
+        const rankingData = await getJobRankings(id, {
+          sortBy,
+          sortOrder,
+          ...filters,
+        });
+        if (isMounted.current) {
+          setRankings(rankingData.rankings || []);
+          setFilteredRankings(rankingData.rankings || []);
+        }
+      } catch {
+        if (isMounted.current) {
+          setRankings([]);
+          setFilteredRankings([]);
+        }
+      }
+    },
+    [id, sortBy, sortOrder]
+  );
+
+  const loadData = useCallback(async (isMounted = { current: true }) => {
     try {
       const jobData = await getJobById(id);
-      setJob(jobData.job);
+      if (isMounted.current) {
+        setJob(jobData.job);
+      }
 
-      // Load existing rankings if available
-      await loadRankings();
+      await loadRankings({}, isMounted);
 
-      // Load analytics
       try {
         const analyticsData = await getEmployerAnalysisAnalytics();
-        setAnalytics(analyticsData);
-      } catch (err) {
-        console.log("Analytics not available");
+        if (isMounted.current) {
+          setAnalytics(analyticsData);
+        }
+      } catch {
+        // Analytics may be empty initially
       }
-    } catch (error) {
-      toast.error("Failed to load job");
+    } catch {
+      toast.error("Failed to load job details.");
       navigate("/employer/jobs");
     } finally {
-      setLoading(false);
+      if (isMounted.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, [id, loadRankings, navigate]);
 
-  const loadRankings = async (filters = {}) => {
-    try {
-      const rankingData = await getJobRankings(id, {
-        sortBy,
-        sortOrder,
-        ...filters,
-      });
-      setRankings(rankingData.rankings || []);
-      setFilteredRankings(rankingData.rankings || []);
-    } catch (error) {
-      console.log("No rankings available");
-      setRankings([]);
-      setFilteredRankings([]);
-    }
-  };
+  useEffect(() => {
+    const isMounted = { current: true };
+    loadData(isMounted);
+    return () => {
+      isMounted.current = false;
+    };
+  }, [loadData]);
 
   const handleAnalyze = async () => {
     if (
       !window.confirm(
-        "This will analyze all candidates with parsed resumes against this job. Continue?",
+        "Run HireSense AI multi-dimensional screening across all candidate resumes for this job?"
       )
     )
       return;
@@ -96,18 +118,61 @@ const JobAnalysis = () => {
     try {
       setAnalyzing(true);
       const result = await analyzeJobCandidates(id);
-      toast.success(result.message || "Analysis complete!");
+      toast.success(result.message || "AI Analysis complete!");
       await loadRankings();
 
-      // Refresh analytics
       try {
         const analyticsData = await getEmployerAnalysisAnalytics();
         setAnalytics(analyticsData);
-      } catch (err) {}
+      } catch {
+        // Non-critical background analytics refresh
+      }
     } catch (error) {
-      toast.error(error.response?.data?.message || "Analysis failed");
+      toast.error(error.response?.data?.message || "Analysis failed.");
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const handleExportCSV = async () => {
+    try {
+      setExporting(true);
+      const blob = await exportJobRankingsCSV(id);
+      const url = window.URL.createObjectURL(new Blob([blob], { type: "text/csv;charset=utf-8;" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `HireSense_${job?.title?.replace(/\s+/g, "_") || "Job"}_Rankings.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("CSV candidate report exported successfully!");
+    } catch {
+      toast.error("Failed to export CSV report.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleBulkUploadSubmit = async (e) => {
+    e.preventDefault();
+    if (!bulkFiles.length) {
+      toast.error("Please select at least one PDF or DOCX resume.");
+      return;
+    }
+
+    try {
+      setBulkUploading(true);
+      const res = await uploadBulkResumes(bulkFiles);
+      toast.success(res.message);
+      setBulkSummary(res);
+      setBulkFiles([]);
+      // Refresh rankings
+      await loadRankings();
+    } catch (err) {
+      toast.error(err.response?.data?.message || "Bulk upload failed.");
+    } finally {
+      setBulkUploading(false);
     }
   };
 
@@ -118,8 +183,8 @@ const JobAnalysis = () => {
       await updateRankingStatus(rankingId, "shortlisted");
       toast.success("Candidate shortlisted!");
       await loadRankings();
-    } catch (error) {
-      toast.error("Failed to shortlist");
+    } catch {
+      toast.error("Failed to shortlist candidate.");
     }
   };
 
@@ -128,10 +193,10 @@ const JobAnalysis = () => {
     if (!rankingId) return;
     try {
       await updateRankingStatus(rankingId, "rejected");
-      toast.success("Candidate rejected");
+      toast.success("Candidate rejected.");
       await loadRankings();
-    } catch (error) {
-      toast.error("Failed to reject");
+    } catch {
+      toast.error("Failed to update status.");
     }
   };
 
@@ -147,15 +212,11 @@ const JobAnalysis = () => {
   };
 
   const handleSearch = (term) => {
+    const searchLower = term.toLowerCase();
     const filtered = rankings.filter((r) => {
       const name = (r.candidate?.name || r.candidateName || "").toLowerCase();
-      const email = (
-        r.candidate?.email ||
-        r.candidateEmail ||
-        ""
-      ).toLowerCase();
+      const email = (r.candidate?.email || r.candidateEmail || "").toLowerCase();
       const missingSkills = (r.missingSkills || []).join(" ").toLowerCase();
-      const searchLower = term.toLowerCase();
       return (
         name.includes(searchLower) ||
         email.includes(searchLower) ||
@@ -176,26 +237,12 @@ const JobAnalysis = () => {
 
   const scoreDistributionData = analytics?.scoreDistribution
     ? [
-        {
-          name: "Excellent (85+)",
-          value: analytics.scoreDistribution.excellent,
-          color: "#10b981",
-        },
-        {
-          name: "Strong (70-84)",
-          value: analytics.scoreDistribution.strong,
-          color: "#6366f1",
-        },
-        {
-          name: "Adequate (50-69)",
-          value: analytics.scoreDistribution.adequate,
-          color: "#f59e0b",
-        },
+        { name: "Excellent (85+)", value: analytics.scoreDistribution.excellent, color: "#10b981" },
+        { name: "Strong (70-84)", value: analytics.scoreDistribution.strong, color: "#6366f1" },
+        { name: "Adequate (50-69)", value: analytics.scoreDistribution.adequate, color: "#f59e0b" },
         {
           name: "Below (0-49)",
-          value:
-            analytics.scoreDistribution.belowAverage +
-            analytics.scoreDistribution.poor,
+          value: analytics.scoreDistribution.belowAverage + analytics.scoreDistribution.poor,
           color: "#ef4444",
         },
       ].filter((d) => d.value > 0)
@@ -203,529 +250,363 @@ const JobAnalysis = () => {
 
   const recommendationDistData = analytics?.recommendationDistribution
     ? [
-        {
-          name: "Highly Rec",
-          value: analytics.recommendationDistribution.highlyRecommended,
-          color: "#10b981",
-        },
-        {
-          name: "Recommended",
-          value: analytics.recommendationDistribution.recommended,
-          color: "#6366f1",
-        },
-        {
-          name: "Moderate",
-          value: analytics.recommendationDistribution.moderate,
-          color: "#f59e0b",
-        },
-        {
-          name: "Not Rec",
-          value: analytics.recommendationDistribution.notRecommended,
-          color: "#ef4444",
-        },
+        { name: "Highly Rec", value: analytics.recommendationDistribution.highlyRecommended, color: "#10b981" },
+        { name: "Recommended", value: analytics.recommendationDistribution.recommended, color: "#6366f1" },
+        { name: "Moderate", value: analytics.recommendationDistribution.moderate, color: "#f59e0b" },
+        { name: "Not Rec", value: analytics.recommendationDistribution.notRecommended, color: "#ef4444" },
       ].filter((d) => d.value > 0)
     : [];
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 via-indigo-50/30 to-cyan-50/30 flex items-center justify-center">
-        <LoadingSpinner text="Loading analysis..." />
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-4">
+        <LoadingSpinner text="Loading candidate rankings..." />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-indigo-50/30 to-cyan-50/30">
+    <div className="min-h-screen bg-slate-50 text-slate-900">
       <Navbar />
+
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800">
-              AI Candidate Analysis
-            </h1>
-            <p className="text-gray-500 mt-1">
-              {job?.title} at {job?.company}
-            </p>
-          </div>
-          <div className="flex gap-3">
-            <Link
-              to={`/employer/jobs/${id}`}
-              className="px-4 py-2.5 bg-white text-gray-600 border border-gray-200 rounded-xl text-sm font-medium hover:bg-gray-50 transition-all"
-            >
-              ← Back to Job
-            </Link>
-            <button
-              onClick={handleAnalyze}
-              disabled={analyzing}
-              className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-cyan-500 text-white rounded-xl text-sm font-medium hover:from-indigo-700 hover:to-cyan-600 transition-all disabled:opacity-50 flex items-center gap-2"
-            >
-              {analyzing ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  Analyzing...
-                </>
-              ) : (
-                <>
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-                    />
-                  </svg>
-                  Analyze Candidates
-                </>
-              )}
-            </button>
+        {/* Hero Header Banner */}
+        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-900 rounded-3xl p-8 mb-8 text-white shadow-md border border-slate-800">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-cyan-400 text-xs font-semibold uppercase tracking-wider mb-3">
+                Recruitment Intelligence
+              </div>
+              <h1 className="text-3xl font-extrabold tracking-tight">
+                AI Candidate Screening & Ranking
+              </h1>
+              <p className="text-slate-300 mt-1 text-base">
+                {job?.title} <span className="text-cyan-400">@</span> {job?.company}
+              </p>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-wrap items-center gap-3">
+              <Link
+                to={`/employer/jobs/${id}`}
+                className="px-4 py-2.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition"
+              >
+                ← View Job Details
+              </Link>
+
+              <button
+                onClick={() => setBulkModalOpen(true)}
+                className="px-4 py-2.5 bg-slate-800/80 hover:bg-slate-700 text-cyan-400 border border-cyan-500/40 rounded-xl text-xs font-semibold transition flex items-center gap-2 shadow-sm"
+              >
+                📁 Bulk Upload Resumes
+              </button>
+
+              <button
+                onClick={handleExportCSV}
+                disabled={exporting || rankings.length === 0}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition disabled:opacity-50 flex items-center gap-2 shadow-sm"
+              >
+                📥 Export CSV Report
+              </button>
+
+              <button
+                onClick={handleAnalyze}
+                disabled={analyzing}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition disabled:opacity-50 flex items-center gap-2 shadow-sm"
+              >
+                {analyzing ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Screening Resumes...
+                  </>
+                ) : (
+                  <>⚡ Re-Analyze All Candidates</>
+                )}
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-2 mb-6">
+        {/* Tab Navigation */}
+        <div className="flex gap-2 mb-6 border-b border-slate-200 pb-2">
           <button
             onClick={() => setActiveTab("rankings")}
-            className={`px-6 py-3 rounded-xl text-sm font-medium transition-all ${
+            className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition ${
               activeTab === "rankings"
-                ? "bg-indigo-600 text-white"
-                : "bg-white text-gray-600 border border-gray-200 hover:bg-gray-50"
+                ? "bg-indigo-600 text-white shadow-sm"
+                : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
             }`}
           >
-            Rankings ({filteredRankings.length})
+            Candidate Rankings ({filteredRankings.length})
           </button>
           <button
             onClick={() => setActiveTab("analytics")}
-            className={`px-6 py-3 rounded-xl text-sm font-medium transition-all ${
+            className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition ${
               activeTab === "analytics"
-                ? "bg-indigo-600 text-white"
-                : "bg-white text-gray-600 border border-gray-200 hover:bg-gray-50"
+                ? "bg-indigo-600 text-white shadow-sm"
+                : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
             }`}
           >
-            Analytics
+            Analytics & Distribution
           </button>
         </div>
 
-        {/* Rankings Tab */}
+        {/* Tab 1: Rankings View */}
         {activeTab === "rankings" && (
           <div className="space-y-6">
-            {/* Filter & Search */}
             <FilterBar
               onFilter={handleFilter}
               onSearch={handleSearch}
               onSort={handleSort}
-              sortBy={sortBy}
-              sortOrder={sortOrder}
+              totalCount={filteredRankings.length}
             />
 
-            {/* Status Summary */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              <div className="bg-white/80 backdrop-blur-sm rounded-xl p-4 border border-gray-200/50 text-center">
-                <p className="text-2xl font-bold text-indigo-600">
-                  {filteredRankings.length}
-                </p>
-                <p className="text-xs text-gray-500 mt-1">Total Analyzed</p>
-              </div>
-              <div className="bg-white/80 backdrop-blur-sm rounded-xl p-4 border border-gray-200/50 text-center">
-                <p className="text-2xl font-bold text-green-600">
-                  {
-                    filteredRankings.filter((r) => r.status === "shortlisted")
-                      .length
-                  }
-                </p>
-                <p className="text-xs text-gray-500 mt-1">Shortlisted</p>
-              </div>
-              <div className="bg-white/80 backdrop-blur-sm rounded-xl p-4 border border-gray-200/50 text-center">
-                <p className="text-2xl font-bold text-red-600">
-                  {
-                    filteredRankings.filter((r) => r.status === "rejected")
-                      .length
-                  }
-                </p>
-                <p className="text-xs text-gray-500 mt-1">Rejected</p>
-              </div>
-              <div className="bg-white/80 backdrop-blur-sm rounded-xl p-4 border border-gray-200/50 text-center">
-                <p className="text-2xl font-bold text-emerald-600">
-                  {
-                    filteredRankings.filter(
-                      (r) => r.recommendation === "Highly Recommended",
-                    ).length
-                  }
-                </p>
-                <p className="text-xs text-gray-500 mt-1">Highly Rec</p>
-              </div>
-              <div className="bg-white/80 backdrop-blur-sm rounded-xl p-4 border border-gray-200/50 text-center">
-                <p className="text-2xl font-bold text-blue-600">
-                  {filteredRankings.length
-                    ? Math.round(
-                        filteredRankings.reduce(
-                          (s, r) => s + (r.overallScore || 0),
-                          0,
-                        ) / filteredRankings.length,
-                      )
-                    : 0}
-                </p>
-                <p className="text-xs text-gray-500 mt-1">Avg Score</p>
-              </div>
-            </div>
-
-            {/* Top 3 Cards */}
-            {topThree.length > 0 && (
-              <div>
-                <h2 className="text-lg font-bold text-gray-800 mb-4">
-                  🏆 Top Candidates
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {topThree.map((candidate) => (
-                    <RankingCard
-                      key={candidate._id || candidate.applicationId}
-                      rank={candidate.rank}
-                      candidate={candidate}
-                      onViewAnalysis={handleViewAnalysis}
-                      onShortlist={handleShortlist}
-                      onReject={handleReject}
-                    />
-                  ))}
+            {analyzing && (
+              <div className="p-6 bg-indigo-50 border border-indigo-200 rounded-2xl flex items-center gap-4">
+                <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                <div>
+                  <h4 className="font-bold text-indigo-950">HireSense AI is evaluating resumes...</h4>
+                  <p className="text-xs text-indigo-700 mt-0.5">
+                    Analyzing 11 scoring dimensions, semantic skill matching, and ATS keyword relevance.
+                  </p>
                 </div>
               </div>
             )}
 
-            {/* Rankings Table */}
             {filteredRankings.length > 0 ? (
-              <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/50 overflow-hidden">
-                <div className="p-4 border-b border-gray-100">
-                  <h2 className="text-lg font-bold text-gray-800">
-                    All Candidates
-                  </h2>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="bg-gray-50 border-b border-gray-200">
-                        <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Rank
-                        </th>
-                        <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Candidate
-                        </th>
-                        <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Overall
-                        </th>
-                        <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Resume
-                        </th>
-                        <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          ATS
-                        </th>
-                        <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Skills
-                        </th>
-                        <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Exp
-                        </th>
-                        <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Edu
-                        </th>
-                        <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Recommendation
-                        </th>
-                        <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {restRankings.map((candidate) => (
-                        <tr
-                          key={candidate._id || candidate.applicationId}
-                          className="border-b border-gray-100 hover:bg-gray-50/50 transition-all"
-                        >
-                          <td className="py-3 px-4">
-                            <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 text-gray-600 text-xs font-bold">
-                              #{candidate.rank}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="flex items-center gap-2">
-                              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-cyan-500 flex items-center justify-center text-white text-xs font-bold">
-                                {(
-                                  candidate.candidate?.name ||
-                                  candidate.candidateName ||
-                                  "U"
-                                ).charAt(0)}
-                              </div>
-                              <div>
-                                <p className="text-sm font-semibold text-gray-700">
-                                  {candidate.candidate?.name ||
-                                    candidate.candidateName ||
-                                    "Unknown"}
-                                </p>
-                                <p className="text-xs text-gray-400">
-                                  {candidate.candidate?.email ||
-                                    candidate.candidateEmail ||
-                                    ""}
-                                </p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <span
-                              className={`text-sm font-bold ${
-                                candidate.overallScore >= 80
-                                  ? "text-green-600"
-                                  : candidate.overallScore >= 60
-                                    ? "text-blue-600"
-                                    : "text-red-600"
-                              }`}
-                            >
-                              {candidate.overallScore || 0}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-center text-sm text-gray-600">
-                            {candidate.resumeScore || 0}
-                          </td>
-                          <td className="py-3 px-4 text-center text-sm text-gray-600">
-                            {candidate.atsScore || 0}
-                          </td>
-                          <td className="py-3 px-4 text-center text-sm text-gray-600">
-                            {candidate.skillMatch || 0}
-                          </td>
-                          <td className="py-3 px-4 text-center text-sm text-gray-600">
-                            {candidate.experienceMatch || 0}
-                          </td>
-                          <td className="py-3 px-4 text-center text-sm text-gray-600">
-                            {candidate.educationMatch || 0}
-                          </td>
-                          <td className="py-3 px-4">
-                            <span
-                              className={`px-2 py-1 rounded-full text-[10px] font-semibold ${
-                                candidate.recommendation ===
-                                "Highly Recommended"
-                                  ? "bg-emerald-50 text-emerald-700"
-                                  : candidate.recommendation === "Recommended"
-                                    ? "bg-blue-50 text-blue-700"
-                                    : candidate.recommendation === "Moderate"
-                                      ? "bg-orange-50 text-orange-700"
-                                      : "bg-red-50 text-red-700"
-                              }`}
-                            >
-                              {candidate.recommendation || "N/A"}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="flex gap-1 justify-center">
-                              <button
-                                onClick={() => handleViewAnalysis(candidate)}
-                                className="px-2 py-1 text-[10px] font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100"
-                              >
-                                View AI
-                              </button>
-                              {candidate.status === "analyzed" && (
-                                <>
-                                  <button
-                                    onClick={() => handleShortlist(candidate)}
-                                    className="px-2 py-1 text-[10px] font-medium text-green-600 bg-green-50 rounded-lg hover:bg-green-100"
-                                  >
-                                    ✓
-                                  </button>
-                                  <button
-                                    onClick={() => handleReject(candidate)}
-                                    className="px-2 py-1 text-[10px] font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100"
-                                  >
-                                    ✕
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
+              <div className="space-y-6">
+                {/* Top 3 Podium Cards */}
+                {topThree.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
+                      Top Match Candidates
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {topThree.map((candidate) => (
+                        <RankingCard
+                          key={candidate._id || candidate.candidateId}
+                          candidate={candidate}
+                          onShortlist={handleShortlist}
+                          onReject={handleReject}
+                          onViewAnalysis={handleViewAnalysis}
+                          featured={true}
+                        />
                       ))}
-                    </tbody>
-                  </table>
-                </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Remaining Ranked Candidates */}
+                {restRankings.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
+                      Other Evaluated Candidates ({restRankings.length})
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {restRankings.map((candidate) => (
+                        <RankingCard
+                          key={candidate._id || candidate.candidateId}
+                          candidate={candidate}
+                          onShortlist={handleShortlist}
+                          onReject={handleReject}
+                          onViewAnalysis={handleViewAnalysis}
+                          featured={false}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="text-center py-20 text-gray-400 bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/50">
-                <p className="text-5xl mb-4">{analyzing ? "🤖" : "📊"}</p>
-                <p className="text-lg font-medium">
-                  {analyzing
-                    ? "AI is analyzing candidates..."
-                    : "No candidates analyzed yet"}
+              <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 shadow-sm p-8">
+                <div className="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-3xl mx-auto mb-4">
+                  👥
+                </div>
+                <h3 className="text-lg font-bold text-slate-900">No candidate rankings yet</h3>
+                <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto mb-6">
+                  Bulk upload resumes or click "Analyze Candidates" to screen available profiles against this job criteria.
                 </p>
-                <p className="text-sm mt-1">
-                  {analyzing
-                    ? "This may take a moment..."
-                    : "Click 'Analyze Candidates' to start AI screening"}
-                </p>
+                <div className="flex justify-center gap-3">
+                  <button
+                    onClick={() => setBulkModalOpen(true)}
+                    className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-semibold hover:bg-slate-800 transition"
+                  >
+                    📁 Upload Resumes Now
+                  </button>
+                  <button
+                    onClick={handleAnalyze}
+                    className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 transition"
+                  >
+                    ⚡ Analyze Existing Resumes
+                  </button>
+                </div>
               </div>
             )}
           </div>
         )}
 
-        {/* Analytics Tab */}
+        {/* Tab 2: Analytics View */}
         {activeTab === "analytics" && (
           <div className="space-y-6">
             {analytics ? (
               <>
-                {/* Score Distribution */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                    <h3 className="text-lg font-bold text-gray-800 mb-4">
-                      Score Distribution
-                    </h3>
-                    {scoreDistributionData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height={300}>
-                        <BarChart data={scoreDistributionData}>
-                          <CartesianGrid
-                            strokeDasharray="3 3"
-                            stroke="#f0f0f0"
-                          />
-                          <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                          <YAxis />
-                          <Tooltip />
-                          <Bar dataKey="value" radius={[8, 8, 0, 0]}>
-                            {scoreDistributionData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex items-center justify-center h-[300px] text-gray-400">
-                        No data available
-                      </div>
-                    )}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-sm">
+                    <p className="text-xs font-semibold text-slate-500 uppercase">Avg Resume Score</p>
+                    <p className="text-3xl font-extrabold text-indigo-600 mt-1">
+                      {analytics.averageResumeScore || 0}%
+                    </p>
                   </div>
+                  <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-sm">
+                    <p className="text-xs font-semibold text-slate-500 uppercase">Avg ATS Score</p>
+                    <p className="text-3xl font-extrabold text-cyan-600 mt-1">
+                      {analytics.averageAtsScore || 0}%
+                    </p>
+                  </div>
+                  <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-sm">
+                    <p className="text-xs font-semibold text-slate-500 uppercase">Avg Overall Match</p>
+                    <p className="text-3xl font-extrabold text-purple-600 mt-1">
+                      {analytics.averageOverallScore || 0}%
+                    </p>
+                  </div>
+                  <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-sm">
+                    <p className="text-xs font-semibold text-slate-500 uppercase">Total Screened</p>
+                    <p className="text-3xl font-extrabold text-slate-800 mt-1">
+                      {analytics.totalCandidates || rankings.length || 0}
+                    </p>
+                  </div>
+                </div>
 
-                  {/* Recommendation Distribution */}
-                  <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                    <h3 className="text-lg font-bold text-gray-800 mb-4">
-                      Recommendation Distribution
-                    </h3>
-                    {recommendationDistData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height={300}>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {scoreDistributionData.length > 0 && (
+                    <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-sm">
+                      <h4 className="text-sm font-bold text-slate-800 mb-4">Score Distribution</h4>
+                      <ResponsiveContainer width="100%" height={260}>
                         <PieChart>
                           <Pie
-                            data={recommendationDistData}
+                            data={scoreDistributionData}
+                            dataKey="value"
+                            nameKey="name"
                             cx="50%"
                             cy="50%"
-                            innerRadius={60}
-                            outerRadius={100}
-                            paddingAngle={5}
-                            dataKey="value"
-                            label={({ name, value }) => `${name}: ${value}`}
+                            outerRadius={80}
+                            label
                           >
-                            {recommendationDistData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            {scoreDistributionData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color || COLORS[index % COLORS.length]} />
                             ))}
                           </Pie>
                           <Tooltip />
                           <Legend />
                         </PieChart>
                       </ResponsiveContainer>
-                    ) : (
-                      <div className="flex items-center justify-center h-[300px] text-gray-400">
-                        No data available
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Summary Cards */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                    <p className="text-sm text-gray-500">Avg Resume Score</p>
-                    <p className="text-3xl font-bold text-indigo-600">
-                      {analytics.averageResumeScore || 0}
-                    </p>
-                  </div>
-                  <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                    <p className="text-sm text-gray-500">Avg ATS Score</p>
-                    <p className="text-3xl font-bold text-blue-600">
-                      {analytics.averageAtsScore || 0}
-                    </p>
-                  </div>
-                  <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                    <p className="text-sm text-gray-500">Avg Overall</p>
-                    <p className="text-3xl font-bold text-purple-600">
-                      {analytics.averageOverallScore || 0}
-                    </p>
-                  </div>
-                  <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                    <p className="text-sm text-gray-500">Total Analyzed</p>
-                    <p className="text-3xl font-bold text-teal-600">
-                      {analytics.totalCandidates || 0}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Top Skills */}
-                {analytics.topSkills?.length > 0 && (
-                  <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                    <h3 className="text-lg font-bold text-gray-800 mb-4">
-                      Most Missing Skills
-                    </h3>
-                    <div className="flex flex-wrap gap-3">
-                      {analytics.topSkills.map((skill, i) => (
-                        <div
-                          key={i}
-                          className="flex items-center gap-2 px-4 py-2 bg-orange-50 rounded-xl border border-orange-100"
-                        >
-                          <span className="text-sm font-semibold text-orange-700">
-                            {skill.name}
-                          </span>
-                          <span className="text-xs bg-orange-200 text-orange-800 px-2 py-0.5 rounded-full font-bold">
-                            {skill.count}
-                          </span>
-                        </div>
-                      ))}
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Top Candidate */}
-                {analytics.topCandidate && (
-                  <div className="bg-gradient-to-r from-yellow-50 to-orange-50 backdrop-blur-sm rounded-2xl p-6 border border-yellow-200/50">
-                    <h3 className="text-lg font-bold text-yellow-800 mb-2">
-                      🏆 Highest Ranked Candidate
-                    </h3>
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-full bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center text-white text-lg font-bold">
-                        {analytics.topCandidate.name?.charAt(0) || "U"}
-                      </div>
-                      <div>
-                        <p className="text-lg font-bold text-gray-800">
-                          {analytics.topCandidate.name}
-                        </p>
-                        <p className="text-sm text-gray-500">
-                          Score: {analytics.topCandidate.overallScore} —{" "}
-                          {analytics.topCandidate.jobTitle} at{" "}
-                          {analytics.topCandidate.company}
-                        </p>
-                      </div>
+                  {recommendationDistData.length > 0 && (
+                    <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-sm">
+                      <h4 className="text-sm font-bold text-slate-800 mb-4">Recommendation Breakdown</h4>
+                      <ResponsiveContainer width="100%" height={260}>
+                        <BarChart data={recommendationDistData}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                          <YAxis allowDecimals={false} />
+                          <Tooltip />
+                          <Bar dataKey="value" fill="#6366f1" radius={[6, 6, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </>
             ) : (
-              <div className="text-center py-20 text-gray-400 bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/50">
-                <p className="text-5xl mb-4">📈</p>
-                <p className="text-lg font-medium">
-                  No analytics available yet
-                </p>
-                <p className="text-sm mt-1">
-                  Analyze candidates first to see analytics
-                </p>
+              <div className="text-center py-16 bg-white rounded-2xl border border-slate-200 p-8">
+                <p className="text-slate-500 text-sm">No analytics data available yet. Analyze candidates to view charts.</p>
               </div>
             )}
           </div>
         )}
       </div>
+
+      {/* Bulk Resume Upload Modal */}
+      {bulkModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl border border-slate-100">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold text-slate-900">Bulk Upload Resumes</h3>
+              <button
+                onClick={() => {
+                  setBulkModalOpen(false);
+                  setBulkSummary(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 mb-6">
+              Upload up to 10 candidate resumes (.pdf or .docx) at once. HireSense AI will parse and extract skills automatically.
+            </p>
+
+            <form onSubmit={handleBulkUploadSubmit}>
+              <div className="border-2 border-dashed border-slate-300 rounded-2xl p-6 text-center hover:border-indigo-500 transition mb-4">
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  onChange={(e) => setBulkFiles(Array.from(e.target.files || []))}
+                  className="hidden"
+                  id="bulk-file-input"
+                />
+                <label htmlFor="bulk-file-input" className="cursor-pointer flex flex-col items-center">
+                  <span className="text-3xl mb-2">📄</span>
+                  <span className="text-xs font-semibold text-indigo-600">Click to browse files</span>
+                  <span className="text-[10px] text-slate-400 mt-1">PDF or DOCX (Max 5MB each)</span>
+                </label>
+              </div>
+
+              {bulkFiles.length > 0 && (
+                <div className="mb-4 max-h-36 overflow-y-auto space-y-1.5 p-2 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+                  <span className="font-semibold text-slate-700 block mb-1">
+                    Selected Files ({bulkFiles.length}):
+                  </span>
+                  {bulkFiles.map((file, idx) => (
+                    <div key={idx} className="flex justify-between text-slate-600 truncate">
+                      <span className="truncate">{file.name}</span>
+                      <span className="text-[10px] text-slate-400 font-mono ml-2">
+                        {(file.size / 1024).toFixed(0)} KB
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {bulkSummary && (
+                <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800">
+                  <span className="font-bold">Result:</span> {bulkSummary.message}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setBulkModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={bulkUploading || bulkFiles.length === 0}
+                  className="px-5 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition disabled:opacity-50 flex items-center gap-2"
+                >
+                  {bulkUploading ? "Uploading & Parsing..." : `Upload ${bulkFiles.length} Resumes`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

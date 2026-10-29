@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { isTokenExpired } from '../context/AuthContext';
+import { isTokenExpired } from '../utils/jwt';
 
 const rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const API_URL = rawApiUrl.replace(/\/+$/, '');

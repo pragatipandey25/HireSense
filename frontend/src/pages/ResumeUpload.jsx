@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   uploadResume,
   parseResume,
@@ -23,18 +23,24 @@ const ResumeUpload = () => {
   const [dragActive, setDragActive] = useState(false);
   const [parsedData, setParsedData] = useState(null);
 
-  useEffect(() => {
-    loadResumes();
-  }, []);
-
-  const loadResumes = async () => {
+  const loadResumes = useCallback(async (isMounted = { current: true }) => {
     try {
       const data = await getResumes();
-      setResumes(data.resumes || []);
-    } catch (error) {
-      console.error("Failed to load resumes:", error);
+      if (isMounted.current) {
+        setResumes(data.resumes || []);
+      }
+    } catch {
+      // Handled gracefully
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const isMounted = { current: true };
+    loadResumes(isMounted);
+    return () => {
+      isMounted.current = false;
+    };
+  }, [loadResumes]);
 
   const handleDrag = (e) => {
     e.preventDefault();
@@ -67,11 +73,11 @@ const ResumeUpload = () => {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ];
     if (!allowedTypes.includes(selectedFile.type)) {
-      toast.error("Please upload only PDF or DOCX files");
+      toast.error("Please upload only PDF or DOCX format files");
       return;
     }
-    if (selectedFile.size > 10 * 1024 * 1024) {
-      toast.error("File size must be less than 10MB");
+    if (selectedFile.size > 5 * 1024 * 1024) {
+      toast.error("File size must be 5MB or less");
       return;
     }
     setFile(selectedFile);
@@ -79,7 +85,7 @@ const ResumeUpload = () => {
 
   const handleUpload = async () => {
     if (!file) {
-      toast.error("Please select a file first");
+      toast.error("Please select a document first");
       return;
     }
 
@@ -98,26 +104,26 @@ const ResumeUpload = () => {
       toast.success("Resume parsed successfully!");
       setParsing(false);
 
-      // Update selected resume
       const updated = await getResumes();
-      const found = updated.resumes.find((r) => r._id === data.resume._id);
+      const found = updated.resumes?.find((r) => r._id === data.resume._id);
       if (found) {
         setSelectedResume(found);
       }
     } catch (error) {
-      toast.error(error.response?.data?.message || "Upload failed");
+      toast.error(error.response?.data?.message || "Resume upload failed");
     } finally {
       setLoading(false);
+      setParsing(false);
     }
   };
 
   const handleAnalyze = async () => {
     if (!selectedResume) {
-      toast.error("Please upload and parse a resume first");
+      toast.error("Please select and parse a resume first");
       return;
     }
     if (!jobDescription.trim()) {
-      toast.error("Please enter a job description");
+      toast.error("Please enter a target job description for comparison");
       return;
     }
 
@@ -127,7 +133,7 @@ const ResumeUpload = () => {
       setAnalysis(data.analysis);
       toast.success("AI Analysis complete!");
     } catch (error) {
-      toast.error(error.response?.data?.message || "Analysis failed");
+      toast.error(error.response?.data?.message || "AI Analysis failed");
     } finally {
       setAnalyzing(false);
     }
@@ -142,8 +148,8 @@ const ResumeUpload = () => {
       setAnalysis(null);
       setParsedData(null);
       await loadResumes();
-    } catch (error) {
-      toast.error("Delete failed");
+    } catch {
+      toast.error("Failed to delete resume");
     }
   };
 
@@ -154,34 +160,41 @@ const ResumeUpload = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-indigo-50/30 to-cyan-50/30">
+    <div className="min-h-screen bg-slate-50">
       <Navbar />
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-800">My Resume</h1>
-          <p className="text-gray-500 mt-1">
-            Upload, parse, and analyze your resume with AI
+
+      {/* Header Banner */}
+      <section className="bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-900 text-white border-b border-indigo-900/40">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-400/20 text-indigo-300 text-xs font-semibold mb-2">
+            <span>📄</span> Candidate Portfolio
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+            Resume Management & AI Diagnostics
+          </h1>
+          <p className="text-slate-300 text-sm mt-1">
+            Upload your resume, inspect extracted profile entities, and run instant AI match diagnostics against job roles.
           </p>
         </div>
+      </section>
 
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column - Upload & Resumes */}
+          {/* Left Column: Upload & Profile Resumes */}
           <div className="lg:col-span-1 space-y-6">
-            {/* Upload Card */}
-            <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-              <h2 className="text-lg font-bold text-gray-800 mb-4">
-                Upload Resume
-              </h2>
+            <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs">
+              <h2 className="text-base font-bold text-slate-900 mb-1">Upload New Resume</h2>
+              <p className="text-xs text-slate-500 mb-4">Upload standard PDF or Word DOCX document.</p>
 
               <div
                 onDragEnter={handleDrag}
                 onDragLeave={handleDrag}
                 onDragOver={handleDrag}
                 onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-xl p-6 text-center transition-all ${
+                className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer ${
                   dragActive
-                    ? "border-indigo-500 bg-indigo-50"
-                    : "border-gray-300 hover:border-indigo-400"
+                    ? "border-indigo-500 bg-indigo-50/50"
+                    : "border-slate-300 hover:border-indigo-400 bg-slate-50/50"
                 }`}
               >
                 <input
@@ -189,91 +202,91 @@ const ResumeUpload = () => {
                   accept=".pdf,.docx"
                   onChange={handleFileChange}
                   className="hidden"
-                  id="file-upload"
+                  id="resume-file-upload"
                 />
-                <label htmlFor="file-upload" className="cursor-pointer">
-                  <div className="text-4xl mb-3">📄</div>
-                  <p className="text-sm text-gray-600 font-medium mb-1">
-                    {file
-                      ? file.name
-                      : "Drop your resume here or click to browse"}
+                <label htmlFor="resume-file-upload" className="cursor-pointer block">
+                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center text-xl mx-auto mb-2 border border-indigo-100">
+                    📄
+                  </div>
+                  <p className="text-sm text-slate-800 font-semibold mb-1">
+                    {file ? file.name : "Choose or drag resume here"}
                   </p>
-                  <p className="text-xs text-gray-400">
-                    PDF or DOCX (max 10MB)
-                  </p>
+                  <p className="text-xs text-slate-400">PDF or DOCX (max 5MB)</p>
                 </label>
               </div>
 
               {file && (
-                <div className="mt-4">
-                  <div className="flex items-center justify-between p-3 bg-indigo-50 rounded-xl">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">📎</span>
-                      <span className="text-sm font-medium text-gray-700 truncate max-w-[150px]">
+                <div className="mt-4 pt-3 border-t border-slate-100">
+                  <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <span className="text-slate-500">📎</span>
+                      <span className="text-xs font-semibold text-slate-700 truncate max-w-[180px]">
                         {file.name}
                       </span>
                     </div>
                     <button
+                      type="button"
                       onClick={() => setFile(null)}
-                      className="text-red-500 hover:text-red-700 text-sm font-medium"
+                      className="text-rose-500 hover:text-rose-700 text-xs font-semibold cursor-pointer"
                     >
                       Remove
                     </button>
                   </div>
                   <button
+                    type="button"
                     onClick={handleUpload}
                     disabled={loading}
-                    className="w-full mt-3 py-3 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700 transition disabled:bg-indigo-400"
+                    className="w-full mt-3 py-2.5 bg-gradient-to-r from-indigo-600 to-blue-600 text-white rounded-xl text-sm font-semibold hover:from-indigo-700 hover:to-blue-700 transition shadow-sm disabled:opacity-50 cursor-pointer"
                   >
-                    {loading ? "Uploading..." : "Upload & Parse"}
+                    {loading ? "Processing Upload..." : "Upload & Parse Resume"}
                   </button>
                 </div>
               )}
             </div>
 
-            {/* Previous Resumes */}
+            {/* Previous Resumes List */}
             {resumes.length > 0 && (
-              <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                <h2 className="text-lg font-bold text-gray-800 mb-4">
-                  Previous Resumes
-                </h2>
-                <div className="space-y-3">
+              <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs">
+                <h2 className="text-base font-bold text-slate-900 mb-3">Saved Resumes</h2>
+                <div className="space-y-2">
                   {resumes.map((resume) => (
                     <div
                       key={resume._id}
                       onClick={() => handleSelectResume(resume)}
                       className={`p-3 rounded-xl cursor-pointer transition-all border ${
                         selectedResume?._id === resume._id
-                          ? "border-indigo-300 bg-indigo-50"
-                          : "border-gray-100 hover:border-indigo-200 hover:bg-gray-50"
+                          ? "border-indigo-400 bg-indigo-50/50 shadow-xs"
+                          : "border-slate-200/80 hover:border-indigo-300 hover:bg-slate-50/50"
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-lg">📄</span>
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="text-slate-400 text-base">📄</span>
                           <div>
-                            <p className="text-sm font-medium text-gray-700 truncate max-w-[150px]">
+                            <p className="text-xs font-bold text-slate-800 truncate max-w-[160px]">
                               {resume.originalName}
                             </p>
-                            <p
-                              className={`text-xs ${
+                            <span
+                              className={`text-[10px] font-semibold uppercase tracking-wider ${
                                 resume.status === "analyzed"
-                                  ? "text-green-500"
+                                  ? "text-emerald-600"
                                   : resume.status === "parsed"
-                                    ? "text-blue-500"
-                                    : "text-gray-400"
+                                    ? "text-indigo-600"
+                                    : "text-slate-400"
                               }`}
                             >
-                              {resume.status}
-                            </p>
+                              ● {resume.status}
+                            </span>
                           </div>
                         </div>
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             handleDelete(resume._id);
                           }}
-                          className="text-red-400 hover:text-red-600 text-sm"
+                          className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          title="Delete resume"
                         >
                           ✕
                         </button>
@@ -285,253 +298,186 @@ const ResumeUpload = () => {
             )}
           </div>
 
-          {/* Right Column - Parsing & Analysis */}
+          {/* Right Column: Parsing & AI Diagnostic Output */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Parsed Data */}
             {parsing && (
-              <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50 flex justify-center">
-                <LoadingSpinner text="Parsing resume..." />
+              <div className="bg-white rounded-2xl p-8 border border-slate-200/80 shadow-xs flex justify-center">
+                <LoadingSpinner text="Extracting candidate entities from document..." />
               </div>
             )}
 
             {parsedData && !parsing && (
-              <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-                <h2 className="text-lg font-bold text-gray-800 mb-4">
-                  📋 Parsed Resume Data
-                </h2>
+              <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs">
+                <div className="flex items-center justify-between mb-4 border-b border-slate-100 pb-3">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-900">
+                      Parsed Resume Entities
+                    </h2>
+                    <p className="text-xs text-slate-500">Extracted metadata and structured credentials.</p>
+                  </div>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    ✓ Verified
+                  </span>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-3">
+                  <div className="space-y-2.5 bg-slate-50/70 p-4 rounded-xl border border-slate-100">
                     <div>
-                      <p className="text-xs text-gray-400 uppercase font-semibold">
-                        Name
-                      </p>
-                      <p className="text-gray-800 font-medium">
-                        {parsedData.name || "Not found"}
-                      </p>
+                      <p className="text-[11px] text-slate-400 uppercase font-semibold">Candidate Name</p>
+                      <p className="text-sm font-bold text-slate-800">{parsedData.name || "Not detected"}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-400 uppercase font-semibold">
-                        Email
-                      </p>
-                      <p className="text-gray-800">
-                        {parsedData.email || "Not found"}
-                      </p>
+                      <p className="text-[11px] text-slate-400 uppercase font-semibold">Email</p>
+                      <p className="text-xs text-slate-700 font-mono">{parsedData.email || "Not detected"}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-gray-400 uppercase font-semibold">
-                        Phone
-                      </p>
-                      <p className="text-gray-800">
-                        {parsedData.phone || "Not found"}
-                      </p>
+                      <p className="text-[11px] text-slate-400 uppercase font-semibold">Phone</p>
+                      <p className="text-xs text-slate-700 font-mono">{parsedData.phone || "Not detected"}</p>
                     </div>
                   </div>
-                  <div className="space-y-3">
+
+                  <div className="space-y-3 bg-slate-50/70 p-4 rounded-xl border border-slate-100">
                     <div>
-                      <p className="text-xs text-gray-400 uppercase font-semibold">
-                        Skills ({parsedData.skills?.length || 0})
+                      <p className="text-[11px] text-slate-400 uppercase font-semibold mb-1">
+                        Detected Skills ({parsedData.skills?.length || 0})
                       </p>
-                      <div className="flex flex-wrap gap-1 mt-1">
+                      <div className="flex flex-wrap gap-1">
                         {parsedData.skills?.map((skill, i) => (
                           <span
                             key={i}
-                            className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-xs font-medium"
+                            className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-md text-[11px] font-semibold"
                           >
                             {skill}
                           </span>
-                        )) || (
-                          <p className="text-gray-400 text-sm">Not found</p>
-                        )}
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400 uppercase font-semibold">
-                        Languages
-                      </p>
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {parsedData.languages?.map((lang, i) => (
-                          <span
-                            key={i}
-                            className="px-2 py-0.5 bg-teal-50 text-teal-600 rounded text-xs font-medium"
-                          >
-                            {lang}
-                          </span>
-                        )) || (
-                          <p className="text-gray-400 text-sm">Not found</p>
-                        )}
+                        )) || <span className="text-xs text-slate-400">None detected</span>}
                       </div>
                     </div>
                   </div>
                 </div>
+
                 {parsedData.experience?.length > 0 && (
-                  <div className="mt-4">
-                    <p className="text-xs text-gray-400 uppercase font-semibold mb-2">
-                      Experience
+                  <div className="mt-4 pt-3 border-t border-slate-100">
+                    <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
+                      Work Experience
                     </p>
-                    {parsedData.experience.map((exp, i) => (
-                      <div key={i} className="p-2 bg-gray-50 rounded-lg mb-2">
-                        <p className="text-sm font-medium text-gray-700">
-                          {exp.company || exp.role || "Entry"}
-                        </p>
-                        <p className="text-xs text-gray-400">{exp.duration}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {parsedData.education?.length > 0 && (
-                  <div className="mt-4">
-                    <p className="text-xs text-gray-400 uppercase font-semibold mb-2">
-                      Education
-                    </p>
-                    {parsedData.education.map((edu, i) => (
-                      <div key={i} className="p-2 bg-gray-50 rounded-lg mb-2">
-                        <p className="text-sm font-medium text-gray-700">
-                          {edu.degree || edu.institution}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          {edu.institution} {edu.year}
-                        </p>
-                      </div>
-                    ))}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {parsedData.experience.map((exp, i) => (
+                        <div key={i} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                          <p className="font-bold text-slate-800">{exp.company || exp.role || "Role"}</p>
+                          <p className="text-slate-500 mt-0.5">{exp.duration}</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             )}
 
-            {/* AI Analysis Section */}
-            <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50">
-              <h2 className="text-lg font-bold text-gray-800 mb-4">
-                🤖 AI Analysis
-              </h2>
+            {/* AI Diagnostics Box */}
+            <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-lg">🤖</span>
+                <h2 className="text-base font-bold text-slate-900">AI Role Match Diagnostic</h2>
+              </div>
+              <p className="text-xs text-slate-500 mb-4">
+                Paste any job description to evaluate your resume against its requirements and discover missing skills.
+              </p>
 
               <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Job Description (for comparison)
-                </label>
                 <textarea
                   value={jobDescription}
                   onChange={(e) => setJobDescription(e.target.value)}
-                  placeholder="Paste the job description here to analyze your resume against it..."
+                  placeholder="Paste the target job description or requirements here..."
                   rows={4}
-                  className="w-full p-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white resize-none transition-all leading-relaxed"
                 />
               </div>
 
               <button
+                type="button"
                 onClick={handleAnalyze}
                 disabled={analyzing || !selectedResume}
-                className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-cyan-500 text-white rounded-xl font-medium hover:from-indigo-700 hover:to-cyan-600 transition disabled:opacity-50"
+                className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white rounded-xl text-xs font-semibold shadow-sm transition disabled:opacity-50 cursor-pointer"
               >
-                {analyzing ? "Analyzing with AI..." : "Analyze with AI"}
+                {analyzing ? "Analyzing with HireSense AI..." : "Run AI Resume Diagnostic"}
               </button>
 
               {analyzing && (
-                <div className="mt-6 flex justify-center">
-                  <LoadingSpinner text="AI is analyzing your resume..." />
+                <div className="mt-6 flex justify-center py-4">
+                  <LoadingSpinner text="Evaluating semantic relevance and competencies..." />
                 </div>
               )}
 
               {analysis && !analyzing && (
-                <div className="mt-6 space-y-6">
-                  {/* Score Cards */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-                    <ScoreCard
-                      label="Resume Score"
-                      score={analysis.resumeScore}
-                      color="indigo"
-                      icon="📊"
-                    />
-                    <ScoreCard
-                      label="ATS Score"
-                      score={analysis.atsScore}
-                      color="blue"
-                      icon="⚡"
-                    />
-                    <ScoreCard
-                      label="Technical"
-                      score={analysis.technicalSkills}
-                      color="purple"
-                      icon="💻"
-                    />
-                    <ScoreCard
-                      label="Communication"
-                      score={analysis.communication}
-                      color="teal"
-                      icon="💬"
-                    />
-                    <ScoreCard
-                      label="Experience"
-                      score={analysis.experienceMatch}
-                      color="orange"
-                      icon="💼"
-                    />
-                    <ScoreCard
-                      label="Education"
-                      score={analysis.educationMatch}
-                      color="green"
-                      icon="🎓"
-                    />
+                <div className="mt-6 space-y-5 pt-5 border-t border-slate-100">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+                    <ScoreCard label="Resume Score" score={analysis.resumeScore} color="indigo" icon="📊" />
+                    <ScoreCard label="ATS Score" score={analysis.atsScore} color="blue" icon="⚡" />
+                    <ScoreCard label="Technical" score={analysis.technicalSkills} color="purple" icon="💻" />
+                    <ScoreCard label="Communication" score={analysis.communication} color="teal" icon="💬" />
+                    <ScoreCard label="Experience" score={analysis.experienceMatch} color="orange" icon="💼" />
+                    <ScoreCard label="Education" score={analysis.educationMatch} color="green" icon="🎓" />
                   </div>
 
-                  {/* Ranking Badge */}
                   <div
-                    className={`text-center py-3 px-6 rounded-xl font-bold text-lg ${
+                    className={`text-center py-2.5 px-4 rounded-xl font-bold text-sm ${
                       analysis.ranking === "Highly Recommended"
-                        ? "bg-green-100 text-green-700"
+                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                         : analysis.ranking === "Recommended"
-                          ? "bg-blue-100 text-blue-700"
+                          ? "bg-blue-50 text-blue-700 border border-blue-200"
                           : analysis.ranking === "Moderate"
-                            ? "bg-orange-100 text-orange-700"
-                            : "bg-red-100 text-red-700"
+                            ? "bg-amber-50 text-amber-700 border border-amber-200"
+                            : "bg-rose-50 text-rose-700 border border-rose-200"
                     }`}
                   >
-                    {analysis.ranking}
+                    AI Recommendation Status: {analysis.ranking}
                   </div>
 
-                  {/* Summary */}
-                  <div className="p-4 bg-indigo-50 rounded-xl">
-                    <p className="text-sm text-indigo-900 font-medium">
-                      {analysis.summary}
-                    </p>
-                  </div>
+                  {analysis.summary && (
+                    <div className="p-4 bg-indigo-50/60 rounded-xl border border-indigo-100">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-indigo-700 mb-1">
+                        Executive Summary
+                      </p>
+                      <p className="text-xs text-indigo-950 leading-relaxed font-medium">
+                        {analysis.summary}
+                      </p>
+                    </div>
+                  )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {/* Strengths */}
-                    <div className="p-4 bg-green-50 rounded-xl">
-                      <h3 className="text-sm font-bold text-green-700 mb-2">
-                        ✅ Strengths
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="p-3.5 bg-emerald-50/60 rounded-xl border border-emerald-100">
+                      <h3 className="text-xs font-bold text-emerald-800 mb-1.5 flex items-center gap-1">
+                        <span>✓</span> Key Strengths
                       </h3>
                       <ul className="space-y-1">
                         {analysis.strengths?.map((s, i) => (
-                          <li key={i} className="text-sm text-green-600">
+                          <li key={i} className="text-xs text-emerald-700">
                             • {s}
                           </li>
                         ))}
                       </ul>
                     </div>
 
-                    {/* Weaknesses */}
-                    <div className="p-4 bg-red-50 rounded-xl">
-                      <h3 className="text-sm font-bold text-red-700 mb-2">
-                        ⚠️ Weaknesses
+                    <div className="p-3.5 bg-rose-50/60 rounded-xl border border-rose-100">
+                      <h3 className="text-xs font-bold text-rose-800 mb-1.5 flex items-center gap-1">
+                        <span>⚠️</span> Areas for Improvement
                       </h3>
                       <ul className="space-y-1">
                         {analysis.weaknesses?.map((w, i) => (
-                          <li key={i} className="text-sm text-red-600">
+                          <li key={i} className="text-xs text-rose-700">
                             • {w}
                           </li>
                         ))}
                       </ul>
                     </div>
 
-                    {/* Recommendations */}
-                    <div className="p-4 bg-blue-50 rounded-xl">
-                      <h3 className="text-sm font-bold text-blue-700 mb-2">
-                        💡 Recommendations
+                    <div className="p-3.5 bg-blue-50/60 rounded-xl border border-blue-100">
+                      <h3 className="text-xs font-bold text-blue-800 mb-1.5 flex items-center gap-1">
+                        <span>💡</span> Actionable Advice
                       </h3>
                       <ul className="space-y-1">
                         {analysis.recommendations?.map((r, i) => (
-                          <li key={i} className="text-sm text-blue-600">
+                          <li key={i} className="text-xs text-blue-700">
                             • {r}
                           </li>
                         ))}
@@ -539,17 +485,16 @@ const ResumeUpload = () => {
                     </div>
                   </div>
 
-                  {/* Missing Skills */}
                   {analysis.missingSkills?.length > 0 && (
-                    <div className="p-4 bg-orange-50 rounded-xl">
-                      <h3 className="text-sm font-bold text-orange-700 mb-2">
-                        🔧 Missing Skills
+                    <div className="p-4 bg-amber-50/60 rounded-xl border border-amber-100">
+                      <h3 className="text-xs font-bold text-amber-800 mb-2 flex items-center gap-1.5">
+                        <span>🔧</span> Missing Required Competencies
                       </h3>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-1.5">
                         {analysis.missingSkills.map((skill, i) => (
                           <span
                             key={i}
-                            className="px-3 py-1 bg-orange-200 text-orange-800 rounded-full text-xs font-medium"
+                            className="px-2.5 py-0.5 bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-xs font-semibold"
                           >
                             {skill}
                           </span>
@@ -561,10 +506,8 @@ const ResumeUpload = () => {
               )}
 
               {!selectedResume && !analysis && (
-                <div className="mt-6 text-center py-8 text-gray-400">
-                  <p className="text-lg">
-                    📤 Upload your resume first to get AI analysis
-                  </p>
+                <div className="mt-6 text-center py-6 text-slate-400 text-xs">
+                  Upload or select a resume on the left to activate AI diagnostics.
                 </div>
               )}
             </div>

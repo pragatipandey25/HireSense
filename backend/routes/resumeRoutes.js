@@ -5,20 +5,21 @@ import { protect, authorizeRoles } from '../middleware/authMiddleware.js';
 import validateRequest from '../middleware/validateRequest.js';
 import {
   uploadResume,
+  uploadBulkResumes,
   parseResumeById,
   analyzeResume,
   getResumes,
   getResumeById,
+  downloadResume,
   deleteResume,
   getCandidateResume
 } from '../controllers/resumeController.js';
 
 const router = express.Router();
 
-// All routes require authentication
 router.use(protect);
 
-// Upload resume - candidate only (with magic byte validation)
+// Upload single resume (candidate)
 router.post(
   '/upload',
   authorizeRoles('candidate'),
@@ -27,17 +28,26 @@ router.post(
   uploadResume
 );
 
+// Bulk Upload resumes (employer/admin) - supports up to 10 resumes simultaneously
+router.post(
+  '/bulk-upload',
+  authorizeRoles('employer', 'admin'),
+  upload.array('resumes', 10),
+  validateFileIntegrity,
+  uploadBulkResumes
+);
+
 // Parse resume
 router.post(
   '/parse/:id',
-  authorizeRoles('candidate'),
+  authorizeRoles('candidate', 'employer', 'admin'),
   parseResumeById
 );
 
-// Analyze resume with AI
+// Analyze resume with AI against ad-hoc job description
 router.post(
   '/analyze/:id',
-  authorizeRoles('candidate'),
+  authorizeRoles('candidate', 'employer', 'admin'),
   [
     body('jobDescription', 'Job description is required').notEmpty()
   ],
@@ -45,14 +55,20 @@ router.post(
   analyzeResume
 );
 
-// Get all resumes (for candidate)
+// Get candidate resumes
 router.get(
   '/',
   authorizeRoles('candidate'),
   getResumes
 );
 
-// Get resume by ID
+// Download resume document securely
+router.get(
+  '/download/:id',
+  downloadResume
+);
+
+// Get resume metadata by ID
 router.get(
   '/:id',
   getResumeById
@@ -61,11 +77,11 @@ router.get(
 // Delete resume
 router.delete(
   '/:id',
-  authorizeRoles('candidate'),
+  authorizeRoles('candidate', 'admin'),
   deleteResume
 );
 
-// Get candidate resume (for employer/admin)
+// Get candidate resume (authorized employer/admin only)
 router.get(
   '/candidate/:id',
   authorizeRoles('employer', 'admin'),
@@ -73,4 +89,3 @@ router.get(
 );
 
 export default router;
-

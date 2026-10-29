@@ -45,7 +45,10 @@ const applicationSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
+// Compound indexes for query performance and data integrity
 applicationSchema.index({ jobId: 1, candidateId: 1 }, { unique: true });
+applicationSchema.index({ candidateId: 1, createdAt: -1 });
+applicationSchema.index({ jobId: 1, status: 1 });
+applicationSchema.index({ jobId: 1, createdAt: -1 });
 
 export default mongoose.model('Application', applicationSchema);
-

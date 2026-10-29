@@ -30,3 +30,9 @@ export const getEmployerAnalysisAnalytics = async () => {
   return response.data;
 };
 
+export const exportJobRankingsCSV = async (jobId) => {
+  const response = await api.get(`/analysis/${jobId}/export/csv`, {
+    responseType: 'blob'
+  });
+  return response.data;
+};

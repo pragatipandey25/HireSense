@@ -1,5 +1,5 @@
 import { Navigate } from "react-router-dom";
-import { isTokenExpired } from "../context/AuthContext";
+import { isTokenExpired } from "../utils/jwt";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const token = localStorage.getItem("token");

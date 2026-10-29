@@ -5,6 +5,7 @@ import validateRequest from '../middleware/validateRequest.js';
 import {
   analyzeJobCandidates,
   getJobRankings,
+  exportJobRankingsCSV,
   getRankingDetail,
   updateRanking,
   getAvailableCandidates,
@@ -15,51 +16,57 @@ const router = express.Router();
 
 router.use(protect);
 
-// Employer: Get available candidates with parsed resumes
+// Employer/Admin: Get available candidates with parsed resumes
 router.get(
   '/candidates',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   getAvailableCandidates
 );
 
-// Employer: Analyze all candidates for a job
+// Employer/Admin: Analyze all candidates for a job
 router.post(
   '/:jobId/analyze',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   analyzeJobCandidates
 );
 
-// Employer: Get rankings for a job (with filters, search, sort)
+// Employer/Admin: Get rankings for a job (with filters, search, sort)
 router.get(
   '/:jobId/rankings',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   getJobRankings
 );
 
-// Employer: Get analytics
+// Employer/Admin: Export rankings as CSV report (sanitized against formula injection)
+router.get(
+  '/:jobId/export/csv',
+  authorizeRoles('employer', 'admin'),
+  exportJobRankingsCSV
+);
+
+// Employer/Admin: Get analytics
 router.get(
   '/analytics',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   getEmployerAnalysisAnalytics
 );
 
-// Get single ranking detail
+// Get single ranking detail (Employer, Admin, or Candidate subject)
 router.get(
   '/ranking/:id',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin', 'candidate'),
   getRankingDetail
 );
 
-// Employer: Update ranking status (shortlist/reject)
+// Employer/Admin: Update ranking status (shortlist/reject)
 router.patch(
   '/ranking/:id/status',
-  authorizeRoles('employer'),
+  authorizeRoles('employer', 'admin'),
   [
-    body('status', 'Status is required').isIn(['shortlisted', 'rejected'])
+    body('status', 'Status must be shortlisted, rejected, or analyzed').isIn(['shortlisted', 'rejected', 'analyzed'])
   ],
   validateRequest,
   updateRanking
 );
 
 export default router;
-

@@ -66,5 +66,9 @@ const jobSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-export default mongoose.model('Job', jobSchema);
+// Query performance indexes
+jobSchema.index({ employerId: 1, createdAt: -1 });
+jobSchema.index({ status: 1, createdAt: -1 });
+jobSchema.index({ requiredSkills: 1, status: 1 });
 
+export default mongoose.model('Job', jobSchema);

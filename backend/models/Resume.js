@@ -75,5 +75,8 @@ const resumeSchema = new mongoose.Schema({
   rawText: { type: String, default: '' }
 }, { timestamps: true });
 
-export default mongoose.model('Resume', resumeSchema);
+// Query performance indexes
+resumeSchema.index({ userId: 1, createdAt: -1 });
+resumeSchema.index({ status: 1 });
 
+export default mongoose.model('Resume', resumeSchema);

@@ -35,3 +35,7 @@ export const closeJob = async (id) => {
   return response.data;
 };
 
+export const reopenJob = async (id) => {
+  const response = await api.patch(`/jobs/${id}/reopen`);
+  return response.data;
+};
