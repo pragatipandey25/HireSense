@@ -32,12 +32,17 @@ const Login = () => {
 
       const response = await loginUser(formData);
 
-      console.log("Login Response:", response);
+      const token = response.token;
+      const user = response.user || {
+        _id: response._id,
+        name: response.name,
+        email: response.email,
+        role: response.role,
+      };
 
-      const { token, user } = response;
-
-      // Save token
-      localStorage.setItem("token", token);
+      if (!token || !user) {
+        throw new Error("Invalid response received from server.");
+      }
 
       const userData = {
         _id: user._id,
@@ -46,7 +51,8 @@ const Login = () => {
         role: user.role,
       };
 
-      // Save user
+      // Save token and user
+      localStorage.setItem("token", token);
       localStorage.setItem("user", JSON.stringify(userData));
 
       // Update global auth context
@@ -58,10 +64,15 @@ const Login = () => {
         employer: "/employer-dashboard",
         admin: "/admin-dashboard",
       };
-      navigate(dashboardRoutes[userData.role] || "/");
+      navigate(dashboardRoutes[userData.role] || "/candidate-dashboard");
     } catch (error) {
-      console.log("LOGIN ERROR:", error.response?.data);
-      setErrorMessage(error.response?.data?.message || "Login Failed");
+      console.error("LOGIN ERROR:", error);
+      const serverMsg =
+        error.response?.data?.errors?.[0]?.msg ||
+        error.response?.data?.message ||
+        error.message ||
+        "Login failed. Please check your credentials and try again.";
+      setErrorMessage(serverMsg);
     } finally {
       setLoading(false);
     }
@@ -70,79 +81,97 @@ const Login = () => {
   return (
     <div className="min-h-screen flex">
       {/* Left Section */}
-      <div className="hidden md:flex w-1/2 bg-linear-to-br from-indigo-700 via-blue-600 to-cyan-500 text-white p-16 flex-col justify-center">
-        <div className="w-20 h-20 rounded-2xl bg-white/20 flex items-center justify-center text-3xl font-bold mb-8">
-          AI
+      <div className="hidden md:flex w-1/2 bg-gradient-to-br from-slate-900 via-indigo-950 to-blue-900 text-white p-16 flex-col justify-center">
+        <div className="w-16 h-16 rounded-2xl bg-indigo-600/30 border border-indigo-400/30 flex items-center justify-center text-2xl font-bold mb-8 text-cyan-400">
+          HS
         </div>
 
-        <h1 className="text-6xl font-bold mb-6">WELCOME</h1>
-
-        <h2 className="text-3xl font-semibold mb-4">CVAnalyzer</h2>
-
-        <p className="text-lg text-blue-100 mb-8 max-w-md">
-          AI-powered Resume Screening & Candidate Ranking Platform.
+        <h1 className="text-5xl font-extrabold tracking-tight mb-2">HireSense AI</h1>
+        <p className="text-xl font-medium text-cyan-400 mb-6">
+          Smarter Screening. Better Hiring.
         </p>
 
-        <div className="space-y-3 text-lg">
-          <p>✓ Resume Parsing</p>
-          <p>✓ Candidate Ranking</p>
-          <p>✓ Hiring Analytics</p>
-          <p>✓ Bias Detection</p>
-          <p>✓ Smart Recruitment</p>
+        <p className="text-slate-300 mb-8 max-w-md leading-relaxed">
+          AI-powered recruitment intelligence platform connecting recruiters and candidates through structured, explainable evaluations.
+        </p>
+
+        <div className="space-y-3 text-slate-300">
+          <p className="flex items-center gap-2">
+            <span className="text-cyan-400 font-bold">✓</span> AI Semantic Resume Matching
+          </p>
+          <p className="flex items-center gap-2">
+            <span className="text-cyan-400 font-bold">✓</span> 11-Dimension Candidate Ranking
+          </p>
+          <p className="flex items-center gap-2">
+            <span className="text-cyan-400 font-bold">✓</span> Explainable Skill-Gap Detection
+          </p>
+          <p className="flex items-center gap-2">
+            <span className="text-cyan-400 font-bold">✓</span> Recruitment Intelligence & Analytics
+          </p>
         </div>
       </div>
 
       {/* Right Section */}
-      <div className="flex-1 bg-slate-100 flex items-center justify-center p-8">
+      <div className="flex-1 bg-slate-50 flex items-center justify-center p-8">
         <form
           onSubmit={handleSubmit}
-          className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-10"
+          className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-100 p-10"
         >
-          <h2 className="text-5xl font-bold text-slate-900 mb-2">Sign In</h2>
+          <h2 className="text-3xl font-bold text-slate-900 mb-2">Sign In</h2>
+          <p className="text-slate-500 mb-8">Access your HireSense AI portal</p>
 
-          <p className="text-slate-500 mb-8">Access your CVAnalyzer account</p>
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
+              Email Address
+            </label>
+            <input
+              type="email"
+              name="email"
+              placeholder="name@company.com"
+              value={formData.email}
+              onChange={handleChange}
+              className="w-full p-3.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-slate-900"
+              required
+            />
+          </div>
 
-          <input
-            type="email"
-            name="email"
-            placeholder="Email Address"
-            value={formData.email}
-            onChange={handleChange}
-            className="w-full p-4 border rounded-xl mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            required
-          />
-
-          <input
-            type="password"
-            name="password"
-            placeholder="Password"
-            value={formData.password}
-            onChange={handleChange}
-            className="w-full p-4 border rounded-xl mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            required
-          />
+          <div className="mb-6">
+            <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
+              Password
+            </label>
+            <input
+              type="password"
+              name="password"
+              placeholder="••••••••"
+              value={formData.password}
+              onChange={handleChange}
+              className="w-full p-3.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-slate-900"
+              required
+            />
+          </div>
 
           {errorMessage && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
-              {errorMessage}
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm flex items-start gap-2">
+              <span className="font-bold">⚠️</span>
+              <span>{errorMessage}</span>
             </div>
           )}
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl font-semibold transition disabled:bg-indigo-400 flex items-center justify-center gap-2"
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 rounded-xl font-semibold transition disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
           >
-            {loading ? <LoadingSpinner size="sm" text="" /> : "Sign In"}
+            {loading ? <LoadingSpinner size="sm" text="" /> : "Sign In to HireSense AI"}
           </button>
 
-          <p className="text-center text-slate-500 mt-6">
-            Don't have an account?
+          <p className="text-center text-slate-500 mt-6 text-sm">
+            Don't have an account?{" "}
             <Link
               to="/register"
-              className="text-indigo-600 font-semibold ml-2 hover:underline"
+              className="text-indigo-600 font-semibold hover:underline"
             >
-              Register
+              Create Account
             </Link>
           </p>
         </form>

@@ -4,8 +4,6 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import hpp from 'hpp';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 import connectDB from './config/db.js';
@@ -24,34 +22,33 @@ dotenv.config();
 
 connectDB();
 
-// Seed default admin account once DB connection is established
+// Optional: Seed initial admin account ONLY if explicit env credentials are provided
 mongoose.connection.once('open', async () => {
   try {
-    // Remove old admin with generic email if exists
-    await User.deleteOne({ email: 'admin@gmail.com' });
-    
-    const adminExists = await User.findOne({ email: 'pragatipandey454@gmail.com' });
-    if (!adminExists) {
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash('Admin@123', salt);
-      await User.create({
-        name: 'Pragati Pandey',
-        email: 'pragatipandey454@gmail.com',
-        password: hashedPassword,
-        role: 'admin'
-      });
-      console.log('✅ Default admin account created (pragatipandey454@gmail.com / Admin@123)');
-    } else {
-      console.log('ℹ️ Admin account already exists');
+    const adminEmail = process.env.INITIAL_ADMIN_EMAIL;
+    const adminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+
+    if (adminEmail && adminPassword) {
+      const normalizedEmail = adminEmail.trim().toLowerCase();
+      const adminExists = await User.findOne({ email: normalizedEmail });
+      if (!adminExists) {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(adminPassword, salt);
+        await User.create({
+          name: process.env.INITIAL_ADMIN_NAME || 'HireSense Admin',
+          email: normalizedEmail,
+          password: hashedPassword,
+          role: 'admin'
+        });
+        console.log(`✅ Initial admin account initialized for ${normalizedEmail}`);
+      }
     }
   } catch (error) {
-    console.error('❌ Error seeding admin account:', error.message);
+    console.error('⚠️ Admin initialization notice:', error.message);
   }
 });
 
 const app = express();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // ============================================================
 // 🔒 SECURITY MIDDLEWARE STACK
@@ -60,19 +57,27 @@ const __dirname = path.dirname(__filename);
 // 1. Helmet — Set secure HTTP headers
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
-  contentSecurityPolicy: false, // Disabled for API; enable if serving HTML
+  contentSecurityPolicy: false, // Disabled for pure REST API
 }));
 
-// 2. CORS — Restrict origins
+// 2. CORS — Restrict origins safely (supporting localhost and 127.0.0.1 for local dev)
 const allowedOrigins = [
   'http://localhost:5173',
+  'http://127.0.0.1:5173',
   'http://localhost:5174',
+  'http://127.0.0.1:5174',
   'http://localhost:3000',
-  'https://ai-resume-frontend-mllb.onrender.com',
+  'http://127.0.0.1:3000',
+  'http://localhost:5000',
+  'http://127.0.0.1:5000',
 ];
+if (process.env.CLIENT_URL) {
+  allowedOrigins.push(process.env.CLIENT_URL.trim());
+}
+
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, etc.)
+    // Allow non-browser requests (e.g. mobile apps, curl, tests) or matching origins
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -87,7 +92,7 @@ app.use(cors({
 // 3. Rate Limiting — Prevent brute force / abuse
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  max: 500, // generous limit for normal dashboard navigation
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again after 15 minutes.',
@@ -98,10 +103,21 @@ const apiLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10, // stricter limit for auth routes
+  max: 100, // 100 attempts per 15 min window (prevents locking out during testing)
   message: {
     success: false,
-    message: 'Too many login attempts, please try again after 15 minutes.',
+    message: 'Too many authentication attempts, please try again after 15 minutes.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const aiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60, // Protect expensive AI endpoints
+  message: {
+    success: false,
+    message: 'AI analysis rate limit exceeded. Please try again after 15 minutes.',
   },
   standardHeaders: true,
   legacyHeaders: false,
@@ -110,22 +126,17 @@ const authLimiter = rateLimit({
 // Apply rate limiters
 app.use('/api/', apiLimiter);
 app.use('/api/auth/', authLimiter);
+app.use('/api/analysis/', aiLimiter);
 
 // 4. Body parsing
-app.use(express.json({ limit: '10kb' })); // Limit body size
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+app.use(express.json({ limit: '50kb' }));
+app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 
-// 5. Custom Sanitization (strip $ operators, prevent XSS in body/query/params)
-// Note: express-mongo-sanitize was removed because it's incompatible with Express 5
-// (it reassigns read-only req.query/req.body/req.params properties).
-// Our custom sanitizeMiddleware.js handles this correctly using Object.defineProperty().
+// 5. Custom Sanitization (strip $ operators, prevent NoSQL injection in body/query/params)
 app.use(sanitizeAll);
 
-// 7. HTTP Parameter Pollution protection
+// 6. HTTP Parameter Pollution protection
 app.use(hpp());
-
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -137,7 +148,13 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/analysis', analysisRoutes);
 
 app.get('/', (req, res) => {
-    res.send('AI Resume Screening & Candidate Ranking API is running...');
+  res.status(200).json({
+    status: 'ok',
+    app: 'HireSense AI',
+    tagline: 'Smarter Screening. Better Hiring.',
+    message: 'HireSense AI API is running...',
+    version: '2.0.0'
+  });
 });
 
 // Error handling middleware (must be after routes)
@@ -147,6 +164,6 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log('🔒 Security middleware enabled: Helmet, CORS, RateLimiter, Custom Sanitizer');
+  console.log(`🚀 HireSense AI server running on port ${PORT}`);
+  console.log('🔒 Security middleware enabled: Helmet, CORS, RateLimiter, Sanitizer, HPP');
 });

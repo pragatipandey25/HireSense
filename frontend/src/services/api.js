@@ -1,11 +1,13 @@
- import axios from 'axios';
+import axios from 'axios';
+import { isTokenExpired } from '../context/AuthContext';
 
-const API_URL = import.meta.env.VITE_API_URL;
+const rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL = rawApiUrl.replace(/\/+$/, '');
 
 const api = axios.create({
   baseURL: API_URL,
   headers: {
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
   },
   timeout: 30000, // 30 seconds
 });
@@ -15,17 +17,13 @@ api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
     if (token) {
-      // Check if token is expired before sending
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        if (payload.exp * 1000 < Date.now()) {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
+      if (isTokenExpired(token)) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        if (window.location.pathname !== '/' && window.location.pathname !== '/register') {
           window.location.href = '/';
-          return Promise.reject(new Error('Token expired'));
         }
-      } catch {
-        // Invalid token, continue anyway
+        return Promise.reject(new Error('Session expired. Please log in again.'));
       }
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -34,21 +32,16 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor to handle 401 errors
+// Response interceptor to handle 401 errors cleanly
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      // Only redirect if not already on login page
-      if (window.location.pathname !== '/') {
+      if (window.location.pathname !== '/' && window.location.pathname !== '/register') {
         window.location.href = '/';
       }
-    }
-    // Handle network errors
-    if (!error.response) {
-      console.error('Network error:', error.message);
     }
     return Promise.reject(error);
   }

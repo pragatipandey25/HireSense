@@ -1,14 +1,5 @@
 import { Navigate } from "react-router-dom";
-
-// Helper to decode JWT and check expiry
-const isTokenExpired = (token) => {
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    return payload.exp * 1000 < Date.now();
-  } catch {
-    return true;
-  }
-};
+import { isTokenExpired } from "../context/AuthContext";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const token = localStorage.getItem("token");
@@ -28,7 +19,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     return <Navigate to="/" replace />;
   }
 
-  // Role mismatch → redirect to their own dashboard
+  // Role mismatch → redirect to appropriate role dashboard
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     const redirectMap = {
       candidate: "/candidate-dashboard",
