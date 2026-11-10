@@ -73,6 +73,43 @@ export const uploadResume = async (req, res) => {
       console.error('Initial resume parse notice on upload:', parseErr.message);
     }
 
+    // Immediately compute baseline AI diagnostic evaluation on upload
+    let aiScore = undefined;
+    let aiMetadata = undefined;
+    if (status === 'parsed') {
+      try {
+        const defaultJob = 'Full Stack Software Engineer: Proficient in JavaScript, Python, React, Node.js, databases, REST APIs, and modern application development.';
+        const baseline = await analyzeWithGemini({ ...parsedData, rawText }, defaultJob);
+        aiScore = {
+          resumeScore: baseline.resumeScore ?? 0,
+          atsScore: baseline.atsScore ?? 0,
+          skillMatch: baseline.skillMatch ?? 0,
+          technicalSkills: baseline.skillMatch ?? 0,
+          communicationScore: baseline.communicationScore ?? 0,
+          communication: baseline.communicationScore ?? 0,
+          experienceMatch: baseline.experienceMatch ?? 0,
+          educationMatch: baseline.educationMatch ?? 0,
+          certificationScore: baseline.certificationScore ?? 0,
+          leadershipScore: baseline.leadershipScore ?? 0,
+          missingSkills: baseline.missingSkills || [],
+          strengths: baseline.strengths || [],
+          weaknesses: baseline.weaknesses || [],
+          recommendations: baseline.recommendations || [],
+          recommendation: baseline.recommendation || '',
+          ranking: baseline.recommendation || '',
+          summary: baseline.rankingReason || ''
+        };
+        aiMetadata = {
+          model: baseline._metadata?.model || 'hiresense-ai-v3.2',
+          analyzedAt: new Date(),
+          promptVersion: 'v3.2'
+        };
+        status = 'analyzed';
+      } catch (scoreErr) {
+        console.warn('Initial baseline scoring notice on upload:', scoreErr.message);
+      }
+    }
+
     const resume = await Resume.create({
       userId: req.user._id,
       originalName: req.file.originalname,
@@ -81,7 +118,9 @@ export const uploadResume = async (req, res) => {
       fileData: fileBuffer,
       status,
       rawText,
-      parsedData
+      parsedData,
+      aiScore,
+      aiMetadata
     });
 
     const responseResume = resume.toObject();
@@ -90,7 +129,7 @@ export const uploadResume = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: status === 'parsed' ? 'Resume uploaded and parsed successfully' : 'Resume uploaded successfully',
+      message: status === 'analyzed' ? 'Resume uploaded, parsed, and analyzed successfully' : (status === 'parsed' ? 'Resume uploaded and parsed successfully' : 'Resume uploaded successfully'),
       resume: responseResume
     });
   } catch (error) {
@@ -277,10 +316,10 @@ export const parseResumeById = async (req, res) => {
 // @route   POST /api/resumes/analyze/:id
 export const analyzeResume = async (req, res) => {
   try {
-    const { jobDescription } = req.body;
+    let { jobDescription } = req.body;
 
-    if (!jobDescription) {
-      return res.status(400).json({ success: false, message: 'Job description is required for AI evaluation.' });
+    if (!jobDescription || typeof jobDescription !== 'string' || !jobDescription.trim()) {
+      jobDescription = 'Full Stack Software Engineer: Proficient in JavaScript, Python, React, Node.js, databases, REST APIs, and application architecture.';
     }
 
     const resume = await Resume.findById(req.params.id).select('+rawText +fileData');
@@ -327,7 +366,9 @@ export const analyzeResume = async (req, res) => {
       resumeScore: analysis.resumeScore ?? 0,
       atsScore: analysis.atsScore ?? 0,
       skillMatch: analysis.skillMatch ?? 0,
+      technicalSkills: analysis.skillMatch ?? 0,
       communicationScore: analysis.communicationScore ?? 0,
+      communication: analysis.communicationScore ?? 0,
       experienceMatch: analysis.experienceMatch ?? 0,
       educationMatch: analysis.educationMatch ?? 0,
       certificationScore: analysis.certificationScore ?? 0,
@@ -336,7 +377,9 @@ export const analyzeResume = async (req, res) => {
       strengths: analysis.strengths || [],
       weaknesses: analysis.weaknesses || [],
       recommendations: analysis.recommendations || [],
-      recommendation: analysis.recommendation || ''
+      recommendation: analysis.recommendation || '',
+      ranking: analysis.recommendation || '',
+      summary: analysis.rankingReason || ''
     };
 
     resume.aiMetadata = {

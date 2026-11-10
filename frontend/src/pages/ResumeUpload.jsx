@@ -11,6 +11,13 @@ import ScoreCard from "../components/ScoreCard";
 import Navbar from "../components/Navbar";
 import { toast } from "react-toastify";
 
+const PRESET_ROLES = [
+  { label: "Full Stack Engineer", desc: "Full Stack Developer proficient in React.js, Node.js, Express, MongoDB, REST APIs, JavaScript, TypeScript, and modern scalable application design." },
+  { label: "Frontend Developer", desc: "Frontend Engineer proficient in React.js, Next.js, HTML5, CSS3, Tailwind CSS, Responsive UI Design, component architecture, and state management." },
+  { label: "Backend Developer", desc: "Backend Engineer proficient in Node.js, Express, REST APIs, MongoDB, SQL, authentication (JWT), caching, and database query optimization." },
+  { label: "AI & ML Intern", desc: "AI / ML Developer with practical knowledge of Python, Gemini AI, LLMs, prompt engineering, API integration, and full-stack software development." },
+];
+
 const ResumeUpload = () => {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -27,7 +34,17 @@ const ResumeUpload = () => {
     try {
       const data = await getResumes();
       if (isMounted.current) {
-        setResumes(data.resumes || []);
+        const list = data.resumes || [];
+        setResumes(list);
+        setSelectedResume((prev) => {
+          if (!prev && list.length > 0) {
+            const first = list[0];
+            if (first.parsedData) setParsedData(first.parsedData);
+            if (first.aiScore?.resumeScore) setAnalysis(first.aiScore);
+            return first;
+          }
+          return prev;
+        });
       }
     } catch {
       // Handled gracefully
@@ -96,11 +113,15 @@ const ResumeUpload = () => {
       setFile(null);
       setSelectedResume(data.resume);
 
-      // If backend parsed immediately during upload, use parsedData directly
-      if (data.resume?.parsedData && data.resume.status === "parsed") {
+      if (data.resume?.parsedData) {
         setParsedData(data.resume.parsedData);
-      } else if (data.resume?._id) {
-        // Fallback auto-parse with safe error boundary
+      }
+      if (data.resume?.aiScore?.resumeScore) {
+        setAnalysis(data.resume.aiScore);
+      }
+
+      // If status is not yet analyzed/parsed, trigger fallback parse
+      if (data.resume?.status === "uploaded" && data.resume?._id) {
         try {
           setParsing(true);
           const parseData = await parseResume(data.resume._id);
@@ -121,9 +142,8 @@ const ResumeUpload = () => {
       const found = updated.resumes?.find((r) => r._id === data.resume._id);
       if (found) {
         setSelectedResume(found);
-        if (found.parsedData) {
-          setParsedData(found.parsedData);
-        }
+        if (found.parsedData) setParsedData(found.parsedData);
+        if (found.aiScore?.resumeScore) setAnalysis(found.aiScore);
       }
     } catch (error) {
       toast.error(error.response?.data?.message || "Resume upload failed");
@@ -135,17 +155,15 @@ const ResumeUpload = () => {
 
   const handleAnalyze = async () => {
     if (!selectedResume) {
-      toast.error("Please select and parse a resume first");
-      return;
-    }
-    if (!jobDescription.trim()) {
-      toast.error("Please enter a target job description for comparison");
+      toast.error("Please select a resume first");
       return;
     }
 
+    const descToUse = jobDescription.trim() || "Full Stack Software Engineer: Proficient in modern web development, JavaScript, React, Node.js, databases, REST APIs, and application architecture.";
+
     try {
       setAnalyzing(true);
-      const data = await analyzeResume(selectedResume._id, jobDescription);
+      const data = await analyzeResume(selectedResume._id, descToUse);
       setAnalysis(data.analysis);
       toast.success("AI Analysis complete!");
       await loadResumes();
@@ -425,15 +443,34 @@ const ResumeUpload = () => {
                 <span className="text-lg">🤖</span>
                 <h2 className="text-base font-bold text-slate-900">AI Role Match Diagnostic</h2>
               </div>
-              <p className="text-xs text-slate-500 mb-4">
-                Paste any job description to evaluate your resume against its requirements and discover missing skills.
+              <p className="text-xs text-slate-500 mb-3">
+                Select a target role preset or paste any job description to evaluate your resume against requirements and discover missing skills.
               </p>
+
+              {/* Quick Role Presets */}
+              <div className="mb-3">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                  Target Role Presets
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {PRESET_ROLES.map((role, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setJobDescription(role.desc)}
+                      className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 text-slate-700 rounded-lg border border-slate-200 transition-colors cursor-pointer font-medium"
+                    >
+                      {role.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               <div className="mb-4">
                 <textarea
                   value={jobDescription}
                   onChange={(e) => setJobDescription(e.target.value)}
-                  placeholder="Paste the target job description or requirements here..."
+                  placeholder="Paste the target job description or select a role preset above (leave empty for general full-stack assessment)..."
                   rows={4}
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white resize-none transition-all leading-relaxed"
                 />
@@ -459,33 +496,41 @@ const ResumeUpload = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
                     <ScoreCard label="Resume Score" score={analysis.resumeScore} color="indigo" icon="📊" />
                     <ScoreCard label="ATS Score" score={analysis.atsScore} color="blue" icon="⚡" />
-                    <ScoreCard label="Technical" score={analysis.technicalSkills} color="purple" icon="💻" />
-                    <ScoreCard label="Communication" score={analysis.communication} color="teal" icon="💬" />
+                    <ScoreCard label="Technical" score={analysis.skillMatch ?? analysis.technicalSkills ?? 0} color="purple" icon="💻" />
+                    <ScoreCard label="Communication" score={analysis.communicationScore ?? analysis.communication ?? 0} color="teal" icon="💬" />
                     <ScoreCard label="Experience" score={analysis.experienceMatch} color="orange" icon="💼" />
                     <ScoreCard label="Education" score={analysis.educationMatch} color="green" icon="🎓" />
                   </div>
 
-                  <div
-                    className={`text-center py-2.5 px-4 rounded-xl font-bold text-sm ${
-                      analysis.ranking === "Highly Recommended"
-                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                        : analysis.ranking === "Recommended"
-                          ? "bg-blue-50 text-blue-700 border border-blue-200"
-                          : analysis.ranking === "Moderate"
-                            ? "bg-amber-50 text-amber-700 border border-amber-200"
-                            : "bg-rose-50 text-rose-700 border border-rose-200"
-                    }`}
-                  >
-                    AI Recommendation Status: {analysis.ranking}
-                  </div>
+                  {(() => {
+                    const statusText = analysis.recommendation || analysis.ranking || "Recommended";
+                    const isHighly = statusText === "Highly Recommended";
+                    const isRec = statusText === "Recommended";
+                    const isMod = statusText === "Moderate";
+                    return (
+                      <div
+                        className={`text-center py-2.5 px-4 rounded-xl font-bold text-sm ${
+                          isHighly
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : isRec
+                              ? "bg-blue-50 text-blue-700 border border-blue-200"
+                              : isMod
+                                ? "bg-amber-50 text-amber-700 border border-amber-200"
+                                : "bg-rose-50 text-rose-700 border border-rose-200"
+                        }`}
+                      >
+                        AI Recommendation Status: {statusText}
+                      </div>
+                    );
+                  })()}
 
-                  {analysis.summary && (
+                  {(analysis.rankingReason || analysis.summary) && (
                     <div className="p-4 bg-indigo-50/60 rounded-xl border border-indigo-100">
                       <p className="text-xs font-semibold uppercase tracking-wider text-indigo-700 mb-1">
                         Executive Summary
                       </p>
                       <p className="text-xs text-indigo-950 leading-relaxed font-medium">
-                        {analysis.summary}
+                        {analysis.rankingReason || analysis.summary}
                       </p>
                     </div>
                   )}
