@@ -157,10 +157,33 @@ export async function extractTextFromPDF(filePathOrBuffer) {
       try {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map(item => (typeof item?.str === 'string' ? item.str : ''))
-          .join(' ');
-        fullText += pageText + '\n';
+        
+        let smartLines = [];
+        let currentLine = '';
+        let lastY = null;
+
+        for (const item of textContent.items) {
+          const str = typeof item?.str === 'string' ? item.str : '';
+          if (!str && !item.hasEOL) continue;
+
+          const y = item.transform ? Math.round(item.transform[5]) : null;
+          // When vertical Y-coordinate changes by more than 3 units, it's a new line
+          if (lastY !== null && y !== null && Math.abs(y - lastY) > 3) {
+            if (currentLine.trim()) smartLines.push(currentLine.trim());
+            currentLine = '';
+          }
+          currentLine += (currentLine ? ' ' : '') + str;
+          if (item.hasEOL) {
+            if (currentLine.trim()) smartLines.push(currentLine.trim());
+            currentLine = '';
+            lastY = null;
+            continue;
+          }
+          lastY = y;
+        }
+        if (currentLine.trim()) smartLines.push(currentLine.trim());
+
+        fullText += smartLines.join('\n') + '\n';
       } catch (pageErr) {
         console.warn(`Warning: failed to extract text from PDF page ${i}:`, pageErr.message);
       }
@@ -280,37 +303,44 @@ export async function parseResumeText(text) {
     parsed.email = emailMatch[0];
   }
 
-  // Extract phone number (multiple formats)
-  const phoneRegex = /(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+  // Extract phone number (standard, international, and grouped formats)
+  const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3,5}[-.\s]?\d{4}/g;
   const phoneMatch = text.match(phoneRegex);
   if (phoneMatch) {
     parsed.phone = phoneMatch[0].trim();
   }
 
-  // Extract name — improved algorithm
-  // Try lines at the top of resume (first 30% of lines)
-  const topLinesLimit = Math.ceil(lines.length * 0.3);
-  for (let i = 0; i < topLinesLimit; i++) {
+  // Extract candidate name — multi-pattern scanner
+  for (let i = 0; i < Math.min(lines.length, 12); i++) {
     const trimmed = lines[i].trim();
-    // Skip lines that match email, phone, URLs, or section headers
-    if (!trimmed ||
-        trimmed.includes('@') ||
-        phoneRegex.test(trimmed) ||
-        trimmed.match(/^(experience|education|skills|projects|work|summary|profile|contact|objective|about)/i) ||
-        trimmed.match(/^[A-Z\s]{2,}$/) ||
-        trimmed.length > 50) {
-      continue;
-    }
-    // Name pattern: two consecutive capitalized words, optionally more
-    const nameMatch = trimmed.match(/^([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})/);
-    if (nameMatch) {
-      // Verify it doesn't look like a job title
-      const name = nameMatch[1];
-      if (!name.match(/(engineer|developer|manager|analyst|designer|architect|consultant|lead|head|director|specialist)/i)) {
-        parsed.name = name;
-        break;
+    if (!trimmed) continue;
+
+    // Split line by commas, pipes, bullets, dashes, or 2+ consecutive spaces
+    const parts = trimmed.split(/[\t,|•—–]|\s{2,}/).map(p => p.trim()).filter(Boolean);
+    for (const part of parts) {
+      if (part.includes('@') || phoneRegex.test(part) || /https?:\/\//i.test(part) || /linkedin\.com|github\.com/i.test(part)) {
+        continue;
+      }
+      if (part.length < 3 || part.length > 40) continue;
+      if (part.match(/^(experience|education|skills|projects|work|summary|profile|contact|objective|about|curriculum|resume|cv)/i)) {
+        continue;
+      }
+
+      // Check for 2 to 4 word person names (supporting Title Case and UPPERCASE)
+      const nameMatch = part.match(/^([A-Za-z]{2,}(?:\s+[A-Za-z]{2,}){1,3})$/);
+      if (nameMatch) {
+        const candidateName = nameMatch[1].trim();
+        if (!candidateName.match(/(engineer|developer|manager|analyst|designer|architect|consultant|lead|head|director|specialist|summary|curriculum|vitae)/i)) {
+          // Normalize to Title Case
+          parsed.name = candidateName
+            .split(/\s+/)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+            .join(' ');
+          break;
+        }
       }
     }
+    if (parsed.name) break;
   }
 
   // Extract summary/objective section
@@ -328,7 +358,7 @@ export async function parseResumeText(text) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim().toLowerCase();
 
-    // Detect current section
+    // Detect section header
     for (const header of sectionHeaders) {
       if (line.match(header.match)) {
         currentSection = header.section;
@@ -336,18 +366,20 @@ export async function parseResumeText(text) {
       }
     }
 
-    if (currentSection === 'summary' && i > 0) {
-      const prevLineIsHeader = sectionHeaders.some(h => lines[i - 1]?.trim().toLowerCase().match(h.match));
-      if (!prevLineIsHeader) continue;
-      // Collect next few lines as summary
-      let summaryLines = [];
-      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
-        const nextLine = lines[j].trim();
-        if (nextLine && !sectionHeaders.some(h => nextLine.toLowerCase().match(h.match))) {
-          summaryLines.push(nextLine);
-        } else break;
+    if (currentSection === 'summary') {
+      const isHeaderLine = sectionHeaders.some(h => line.match(h.match));
+      if (isHeaderLine) {
+        let summaryLines = [];
+        for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+          const nextLine = lines[j].trim();
+          if (nextLine && !sectionHeaders.some(h => nextLine.toLowerCase().match(h.match))) {
+            summaryLines.push(nextLine);
+          } else break;
+        }
+        if (summaryLines.length > 0) {
+          parsed.summary = summaryLines.join(' ').trim();
+        }
       }
-      parsed.summary = summaryLines.join(' ').trim();
     }
   }
 

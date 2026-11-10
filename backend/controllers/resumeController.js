@@ -194,8 +194,8 @@ export const parseResumeById = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to parse this resume' });
     }
 
-    // 1. If already parsed and has structured data, return immediately
-    if (resume.parsedData && (resume.parsedData.skills?.length > 0 || resume.parsedData.name || resume.rawText)) {
+    // 1. If already parsed and has verified structured data (including name), return immediately
+    if (resume.parsedData && resume.parsedData.name && (resume.parsedData.skills?.length > 0 || resume.rawText)) {
       if (resume.status !== 'parsed' && resume.status !== 'analyzed') {
         resume.status = 'parsed';
         await resume.save();
@@ -292,8 +292,8 @@ export const analyzeResume = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to analyze this resume' });
     }
 
-    // Auto-parse on the fly if resume lacks parsedData or rawText
-    if (!resume.parsedData || (!resume.parsedData.skills?.length && !resume.parsedData.name && !resume.rawText)) {
+    // Auto-parse on the fly if resume lacks parsedData, candidate name, or rawText
+    if (!resume.parsedData || !resume.parsedData.name || (!resume.parsedData.skills?.length && !resume.rawText)) {
       let parseInput = resume.fileData;
       if (!parseInput) {
         parseInput = resolveResumeFilePath(resume.fileUrl);

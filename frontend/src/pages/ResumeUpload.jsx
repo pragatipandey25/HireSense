@@ -358,7 +358,7 @@ const ResumeUpload = () => {
                       <p className="text-[11px] text-slate-400 uppercase font-semibold mb-1">
                         Detected Skills ({parsedData.skills?.length || 0})
                       </p>
-                      <div className="flex flex-wrap gap-1">
+                      <div className="flex flex-wrap gap-1 max-h-36 overflow-y-auto">
                         {parsedData.skills?.map((skill, i) => (
                           <span
                             key={i}
@@ -372,9 +372,38 @@ const ResumeUpload = () => {
                   </div>
                 </div>
 
-                {parsedData.experience?.length > 0 && (
+                {parsedData.summary && (
                   <div className="mt-4 pt-3 border-t border-slate-100">
-                    <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
+                    <p className="text-[11px] text-slate-400 uppercase font-semibold mb-1">
+                      Professional Summary
+                    </p>
+                    <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100">
+                      {parsedData.summary}
+                    </p>
+                  </div>
+                )}
+
+                {parsedData.education?.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-slate-100">
+                    <p className="text-[11px] text-slate-400 uppercase font-semibold mb-1.5">
+                      Education
+                    </p>
+                    <div className="space-y-1.5">
+                      {parsedData.education.map((edu, i) => (
+                        <div key={i} className="p-2.5 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                          <p className="font-bold text-slate-800">{edu.degree || edu.institution}</p>
+                          {edu.institution && edu.degree && (
+                            <p className="text-slate-500 text-[11px]">{edu.institution} {edu.year ? `(${edu.year})` : ''}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {parsedData.experience?.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-slate-100">
+                    <p className="text-[11px] text-slate-400 uppercase font-semibold mb-1.5">
                       Work Experience
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
