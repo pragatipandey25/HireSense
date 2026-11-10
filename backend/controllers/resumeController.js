@@ -340,9 +340,9 @@ export const analyzeResume = async (req, res) => {
     };
 
     resume.aiMetadata = {
-      model: analysis._metadata?.model || 'gemini-2.0-flash',
+      model: analysis._metadata?.model || 'hiresense-ai-v3.2',
       analyzedAt: analysis._metadata?.analyzedAt || new Date(),
-      promptVersion: analysis._metadata?.promptVersion || 'v3.0'
+      promptVersion: analysis._metadata?.promptVersion || 'v3.2'
     };
     resume.status = 'analyzed';
     await resume.save();
@@ -354,7 +354,7 @@ export const analyzeResume = async (req, res) => {
     });
   } catch (error) {
     console.error('Analyze resume error:', error.message);
-    return res.status(500).json({ success: false, message: 'AI evaluation failed. Please try again later.' });
+    return res.status(500).json({ success: false, message: error.message || 'AI evaluation failed. Please try again later.' });
   }
 };
 
