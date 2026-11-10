@@ -7,12 +7,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// On Vercel / serverless environments, the root filesystem is read-only. Use os.tmpdir().
+// Uploads directory fallback for local disk operations
 export const uploadsDir = process.env.VERCEL
   ? path.join(os.tmpdir(), 'hiresense-uploads')
   : path.join(__dirname, '..', 'uploads');
 
-// Ensure uploads directory exists
 try {
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
@@ -21,23 +20,8 @@ try {
   console.warn('Uploads directory initialization notice:', err.message);
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    try {
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-    } catch (dirErr) {
-      console.warn('Destination directory creation notice:', dirErr.message);
-    }
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `resume-${uniqueSuffix}${ext}`);
-  }
-});
+// Memory storage keeps file buffers directly in memory (zero disk I/O, serverless-native)
+const storage = multer.memoryStorage();
 
 /**
  * Magic bytes for file validation:
@@ -73,19 +57,14 @@ export const validateMagicBytes = (buffer) => {
 };
 
 const fileFilter = (req, file, cb) => {
-  const allowedMimeTypes = [
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/msword',
-  ];
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  const isPdf = ext === '.pdf' || (file.mimetype && file.mimetype.includes('pdf'));
+  const isDocx = ext === '.docx' || ext === '.doc' || (file.mimetype && (file.mimetype.includes('word') || file.mimetype.includes('officedocument')));
 
-  const ext = path.extname(file.originalname).toLowerCase();
-  if (ext !== '.pdf' && ext !== '.docx') {
-    return cb(new Error('Invalid file extension. Only .pdf and .docx documents are supported.'), false);
-  }
-
-  if (!allowedMimeTypes.includes(file.mimetype) && file.mimetype !== 'application/octet-stream') {
-    return cb(new Error('Only PDF and DOCX files are allowed.'), false);
+  if (!isPdf && !isDocx && file.mimetype !== 'application/octet-stream') {
+    const err = new Error('Invalid file format. Please upload a PDF (.pdf) or Word document (.docx).');
+    err.statusCode = 400;
+    return cb(err, false);
   }
 
   cb(null, true);
@@ -111,22 +90,22 @@ const validateFileIntegrity = (req, res, next) => {
   }
 
   for (const file of filesToCheck) {
-    const filePath = file.path;
     try {
       let buffer = file.buffer || null;
-      if (!buffer && filePath && fs.existsSync(filePath)) {
-        buffer = fs.readFileSync(filePath);
+      if (!buffer && file.path && fs.existsSync(file.path)) {
+        buffer = fs.readFileSync(file.path);
       }
 
-      if (!buffer) {
-        continue;
+      if (!buffer || buffer.length < 4) {
+        return res.status(400).json({
+          success: false,
+          message: `The uploaded file "${file.originalname}" is empty or unreadable.`,
+        });
       }
 
       const detectedType = validateMagicBytes(buffer);
 
       if (!detectedType) {
-        // Clean up invalid uploaded file
-        if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
         return res.status(400).json({
           success: false,
           message: `Invalid file format for "${file.originalname}". The file does not appear to be a valid PDF or DOCX document.`,
@@ -134,15 +113,13 @@ const validateFileIntegrity = (req, res, next) => {
       }
 
       const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
-      if (detectedType !== ext && !(ext === 'docx' && detectedType === 'docx')) {
-        if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
+      if (detectedType !== ext && !(ext === 'docx' && detectedType === 'docx') && !(ext === 'doc' && detectedType === 'docx')) {
         return res.status(400).json({
           success: false,
           message: `File type mismatch for "${file.originalname}": detected ${detectedType.toUpperCase()} but extension is .${ext}.`,
         });
       }
     } catch (error) {
-      if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
       return res.status(500).json({
         success: false,
         message: `Failed to validate file integrity for ${file.originalname}.`,

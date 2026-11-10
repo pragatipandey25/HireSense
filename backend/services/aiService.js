@@ -2,9 +2,9 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import crypto from 'crypto';
 
 const CANDIDATE_MODELS = [
+  'gemini-flash-lite-latest',
+  'gemini-3.5-flash',
   'gemini-3.8-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-2.5-flash',
   'gemini-flash-latest'
 ];
 const PROMPT_VERSION = 'v3.2';
@@ -335,7 +335,11 @@ Return ONLY a valid JSON object matching the requested schema.`;
           });
 
           const executeGeneration = async () => {
-            const result = await model.generateContent(prompt);
+            const timeoutPromise = new Promise((_, rej) =>
+              setTimeout(() => rej(new Error('AI inference timeout (6s)')), 6000)
+            );
+            const genPromise = model.generateContent(prompt);
+            const result = await Promise.race([genPromise, timeoutPromise]);
             const response = result.response;
             const text = response.text();
             const raw = parseAIResponse(text);

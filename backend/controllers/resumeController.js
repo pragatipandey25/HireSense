@@ -3,7 +3,7 @@ import Application from '../models/Application.js';
 import Job from '../models/Job.js';
 import Ranking from '../models/Ranking.js';
 import { parseResume, parseResumeText } from '../services/resumeParser.js';
-import { analyzeWithGemini } from '../services/aiService.js';
+import { analyzeWithGemini, evaluateWithHeuristics } from '../services/aiService.js';
 import { uploadsDir } from '../middleware/uploadMiddleware.js';
 import fs from 'fs';
 import path from 'path';
@@ -49,14 +49,18 @@ export const uploadResume = async (req, res) => {
     const fileType = ext === 'pdf' ? 'pdf' : 'docx';
     const filePath = req.file.path;
 
-    // Read file into memory buffer so we can persist in DB and parse immediately
+    // Resolve memory buffer directly from Multer memoryStorage or disk fallback
     let fileBuffer = req.file.buffer || null;
-    if (!fileBuffer && filePath) {
+    if (!fileBuffer && filePath && fs.existsSync(filePath)) {
       try {
         fileBuffer = fs.readFileSync(filePath);
       } catch (readErr) {
         console.warn('Could not read uploaded file to buffer:', readErr.message);
       }
+    }
+
+    if (!fileBuffer || fileBuffer.length === 0) {
+      return res.status(400).json({ success: false, message: 'Uploaded file has no readable content. Please select a valid document.' });
     }
 
     // Immediately parse document content on upload so serverless execution never loses it
@@ -65,7 +69,7 @@ export const uploadResume = async (req, res) => {
     let status = 'uploaded';
 
     try {
-      const parseResult = await parseResume(fileBuffer || filePath, fileType);
+      const parseResult = await parseResume(fileBuffer, fileType);
       rawText = parseResult.rawText || '';
       parsedData = parseResult.parsedData || {};
       status = 'parsed';
@@ -73,13 +77,13 @@ export const uploadResume = async (req, res) => {
       console.error('Initial resume parse notice on upload:', parseErr.message);
     }
 
-    // Immediately compute baseline AI diagnostic evaluation on upload
+    // Immediately compute instant baseline heuristic evaluation on upload (never blocks or times out)
     let aiScore = undefined;
     let aiMetadata = undefined;
     if (status === 'parsed') {
       try {
-        const defaultJob = 'Full Stack Software Engineer: Proficient in JavaScript, Python, React, Node.js, databases, REST APIs, and modern application development.';
-        const baseline = await analyzeWithGemini({ ...parsedData, rawText }, defaultJob);
+        const defaultJob = 'Full Stack Software Engineer: Proficient in JavaScript, Python, React, Node.js, databases, REST APIs, and application architecture.';
+        const baseline = evaluateWithHeuristics({ ...parsedData, rawText }, defaultJob);
         aiScore = {
           resumeScore: baseline.resumeScore ?? 0,
           atsScore: baseline.atsScore ?? 0,
@@ -100,7 +104,7 @@ export const uploadResume = async (req, res) => {
           summary: baseline.rankingReason || ''
         };
         aiMetadata = {
-          model: baseline._metadata?.model || 'hiresense-ai-v3.2',
+          model: 'hiresense-ai-v3.2',
           analyzedAt: new Date(),
           promptVersion: 'v3.2'
         };
@@ -110,10 +114,11 @@ export const uploadResume = async (req, res) => {
       }
     }
 
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
     const resume = await Resume.create({
       userId: req.user._id,
       originalName: req.file.originalname,
-      fileUrl: req.file.filename ? `/uploads/${req.file.filename}` : `/uploads/resume-${Date.now()}.${fileType}`,
+      fileUrl: `/uploads/resume-${uniqueSuffix}.${fileType}`,
       fileType,
       fileData: fileBuffer,
       status,
@@ -158,22 +163,18 @@ export const uploadBulkResumes = async (req, res) => {
     for (const file of files) {
       const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
       const fileType = ext === 'pdf' ? 'pdf' : 'docx';
-      const filePath = file.path;
+      const fileBuffer = file.buffer || (file.path && fs.existsSync(file.path) ? fs.readFileSync(file.path) : null);
 
       try {
-        let fileBuffer = file.buffer || null;
-        if (!fileBuffer && filePath) {
-          try { fileBuffer = fs.readFileSync(filePath); } catch {}
-        }
-
         // Parse document immediately
-        const { rawText, parsedData } = await parseResume(fileBuffer || filePath, fileType);
+        const { rawText, parsedData } = await parseResume(fileBuffer, fileType);
+        const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 
         // Create resume record with persistent fileBuffer
         const resume = await Resume.create({
           userId: req.user._id,
           originalName: file.originalname,
-          fileUrl: file.filename ? `/uploads/${file.filename}` : `/uploads/resume-${Date.now()}.${fileType}`,
+          fileUrl: `/uploads/resume-${uniqueSuffix}.${fileType}`,
           fileType,
           fileData: fileBuffer,
           status: 'parsed',
@@ -192,7 +193,6 @@ export const uploadBulkResumes = async (req, res) => {
         succeeded++;
       } catch (err) {
         console.error(`Failed parsing bulk file ${file.originalname}:`, err.message);
-        if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
         results.push({
           filename: file.originalname,
           status: 'failed',
