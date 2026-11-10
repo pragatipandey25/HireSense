@@ -1,6 +1,15 @@
 import fs from 'fs';
+import { createRequire } from 'module';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import mammoth from 'mammoth';
+
+const require = createRequire(import.meta.url);
+let pdfParseModule = null;
+try {
+  pdfParseModule = require('pdf-parse');
+} catch (err) {
+  console.warn('pdf-parse require notice:', err.message);
+}
 
 // Expanded skills list — 150+ technologies
 const COMMON_SKILLS = [
@@ -140,9 +149,31 @@ export async function extractTextFromPDF(filePathOrBuffer) {
     return '';
   }
 
-  // Safe Uint8Array copy from Buffer
   const uint8Array = new Uint8Array(dataBuffer);
 
+  // Strategy 1: pdf-parse (pure Node.js / serverless-compatible)
+  if (pdfParseModule) {
+    try {
+      if (typeof pdfParseModule.PDFParse === 'function') {
+        const parser = new pdfParseModule.PDFParse(uint8Array);
+        await parser.load();
+        const res = await parser.getText();
+        const extracted = res?.text || (res?.pages ? res.pages.map(p => p.text).join('\n') : '');
+        if (extracted && extracted.trim().length > 20) {
+          return extracted.trim();
+        }
+      } else if (typeof pdfParseModule === 'function') {
+        const res = await pdfParseModule(dataBuffer);
+        if (res?.text && res.text.trim().length > 20) {
+          return res.text.trim();
+        }
+      }
+    } catch (pdfParseErr) {
+      console.warn('PDF parsing with pdf-parse notice:', pdfParseErr.message);
+    }
+  }
+
+  // Strategy 2: pdfjs-dist coordinate-aware text extractor
   try {
     const loadingTask = pdfjsLib.getDocument({
       data: uint8Array,
@@ -189,14 +220,14 @@ export async function extractTextFromPDF(filePathOrBuffer) {
       }
     }
     const cleanText = fullText.trim();
-    if (cleanText.length > 0) {
+    if (cleanText.length > 20) {
       return cleanText;
     }
   } catch (pdfErr) {
     console.warn('PDF parsing with pdfjs-dist encountered notice:', pdfErr.message);
   }
 
-  // Fallback: extract ASCII / readable strings directly from PDF binary stream
+  // Strategy 3: extract ASCII / readable strings directly from PDF binary stream
   try {
     const binaryString = dataBuffer.toString('binary');
     const matches = binaryString.match(/\(([^\(\)\\]*(?:\\.[^\(\)\\]*)*)\)\s*T[jJ]/g) ||
@@ -598,17 +629,46 @@ export async function parseResumeText(text) {
 
 export async function parseResume(filePathOrBuffer, fileType) {
   let text = '';
-  
+  const buffer = toBuffer(filePathOrBuffer);
+
+  // Normalize fileType or detect automatically from buffer magic bytes
+  let detectedType = (fileType || '').toLowerCase().trim();
+  if (!detectedType || (!detectedType.includes('pdf') && !detectedType.includes('docx') && !detectedType.includes('doc'))) {
+    if (buffer && buffer.length >= 4) {
+      // PDF starts with %PDF (0x25, 0x50, 0x44, 0x46)
+      if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+        detectedType = 'pdf';
+      } else if (buffer[0] === 0x50 && buffer[1] === 0x4B) { // PK (ZIP/DOCX container)
+        detectedType = 'docx';
+      }
+    }
+    if (!detectedType && typeof filePathOrBuffer === 'string') {
+      if (filePathOrBuffer.toLowerCase().endsWith('.pdf')) detectedType = 'pdf';
+      else if (filePathOrBuffer.toLowerCase().match(/\.docx?$/)) detectedType = 'docx';
+    }
+  }
+
   try {
-    if (fileType === 'pdf') {
-      text = await extractTextFromPDF(filePathOrBuffer);
-    } else if (fileType === 'docx') {
-      text = await extractTextFromDOCX(filePathOrBuffer);
+    if (detectedType.includes('pdf')) {
+      text = await extractTextFromPDF(buffer || filePathOrBuffer);
+      if (!text || text.trim().length < 20) {
+        const altText = await extractTextFromDOCX(buffer || filePathOrBuffer);
+        if (altText && altText.trim().length > (text ? text.length : 0)) text = altText;
+      }
+    } else if (detectedType.includes('docx') || detectedType.includes('doc')) {
+      text = await extractTextFromDOCX(buffer || filePathOrBuffer);
+      if (!text || text.trim().length < 20) {
+        const altText = await extractTextFromPDF(buffer || filePathOrBuffer);
+        if (altText && altText.trim().length > (text ? text.length : 0)) text = altText;
+      }
     } else {
-      console.warn(`Unsupported file type encountered in parseResume: ${fileType}`);
+      text = await extractTextFromPDF(buffer || filePathOrBuffer);
+      if (!text || text.trim().length < 20) {
+        text = await extractTextFromDOCX(buffer || filePathOrBuffer);
+      }
     }
   } catch (err) {
-    console.warn(`Extraction notice for ${fileType}:`, err.message);
+    console.warn(`Extraction notice for ${detectedType || fileType}:`, err.message);
   }
 
   const parsedData = await parseResumeText(text || '');

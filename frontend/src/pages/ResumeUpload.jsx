@@ -165,12 +165,33 @@ const ResumeUpload = () => {
       setAnalyzing(true);
       const data = await analyzeResume(selectedResume._id, descToUse);
       setAnalysis(data.analysis);
+      if (data.parsedData) {
+        setParsedData(data.parsedData);
+      }
       toast.success("AI Analysis complete!");
       await loadResumes();
     } catch (error) {
       toast.error(error.response?.data?.message || "AI Analysis failed");
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const handleReparse = async (id) => {
+    const resumeId = id || selectedResume?._id;
+    if (!resumeId) return;
+    try {
+      setParsing(true);
+      const data = await parseResume(resumeId);
+      if (data?.parsedData) {
+        setParsedData(data.parsedData);
+        toast.success("Resume data re-extracted successfully!");
+      }
+      await loadResumes();
+    } catch (err) {
+      toast.error(err.response?.data?.message || "Failed to re-extract document");
+    } finally {
+      setParsing(false);
     }
   };
 
@@ -190,7 +211,7 @@ const ResumeUpload = () => {
 
   const handleSelectResume = (resume) => {
     setSelectedResume(resume);
-    setAnalysis(resume.aiScore?.resumeScore ? resume.aiScore : null);
+    setAnalysis(resume.aiScore && (resume.aiScore.resumeScore > 0 || resume.aiScore.recommendation) ? resume.aiScore : null);
     setParsedData(resume.parsedData);
   };
 
@@ -350,9 +371,19 @@ const ResumeUpload = () => {
                     </h2>
                     <p className="text-xs text-slate-500">Extracted metadata and structured credentials.</p>
                   </div>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    ✓ Verified
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleReparse(selectedResume?._id)}
+                      className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition border border-indigo-200 cursor-pointer"
+                      title="Re-extract candidate data from document"
+                    >
+                      ↻ Re-extract
+                    </button>
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      ✓ Verified
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

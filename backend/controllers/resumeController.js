@@ -234,7 +234,13 @@ export const parseResumeById = async (req, res) => {
     }
 
     // 1. If already parsed and has verified structured data (including name), return immediately
-    if (resume.parsedData && resume.parsedData.name && (resume.parsedData.skills?.length > 0 || resume.rawText)) {
+    if (resume.parsedData && 
+        resume.parsedData.name && 
+        resume.parsedData.name !== 'Candidate' && 
+        resume.parsedData.skills && 
+        resume.parsedData.skills.length > 0 && 
+        resume.rawText && 
+        resume.rawText.trim().length > 20) {
       if (resume.status !== 'parsed' && resume.status !== 'analyzed') {
         resume.status = 'parsed';
         await resume.save();
@@ -257,7 +263,7 @@ export const parseResumeById = async (req, res) => {
 
     // 3. Fallback: if rawText is stored, extract structured entities from rawText
     if (!parseInput) {
-      if (resume.rawText && resume.rawText.trim().length > 0) {
+      if (resume.rawText && resume.rawText.trim().length > 20) {
         const parsedData = await parseResumeText(resume.rawText);
         resume.parsedData = parsedData;
         resume.status = 'parsed';
@@ -269,28 +275,9 @@ export const parseResumeById = async (req, res) => {
         });
       }
 
-      // Safe fallback data so user is never stuck in error state
-      const fallbackParsed = {
-        name: 'Candidate',
-        email: '',
-        phone: '',
-        skills: [],
-        experience: [],
-        education: [],
-        projects: [],
-        certifications: [],
-        languages: [],
-        urls: { linkedin: '', github: '' },
-        summary: 'Document uploaded.',
-        totalYearsOfExperience: 0
-      };
-      resume.parsedData = fallbackParsed;
-      resume.status = 'parsed';
-      await resume.save();
-      return res.status(200).json({
-        success: true,
-        message: 'Resume parsed with available information',
-        parsedData: fallbackParsed
+      return res.status(400).json({
+        success: false,
+        message: 'Resume document content is not available. Please upload your resume file again.'
       });
     }
 
@@ -332,7 +319,15 @@ export const analyzeResume = async (req, res) => {
     }
 
     // Auto-parse on the fly if resume lacks parsedData, candidate name, or rawText
-    if (!resume.parsedData || !resume.parsedData.name || (!resume.parsedData.skills?.length && !resume.rawText)) {
+    const needsReparse = !resume.rawText || 
+                         resume.rawText.trim().length < 20 || 
+                         !resume.parsedData || 
+                         !resume.parsedData.name || 
+                         resume.parsedData.name === 'Candidate' || 
+                         !resume.parsedData.skills || 
+                         resume.parsedData.skills.length === 0;
+
+    if (needsReparse) {
       let parseInput = resume.fileData;
       if (!parseInput) {
         parseInput = resolveResumeFilePath(resume.fileUrl);
@@ -340,14 +335,24 @@ export const analyzeResume = async (req, res) => {
       if (parseInput) {
         try {
           const { rawText, parsedData } = await parseResume(parseInput, resume.fileType);
-          resume.rawText = rawText || '';
-          resume.parsedData = parsedData;
-          resume.status = 'parsed';
-          await resume.save();
+          if (rawText && rawText.trim().length > 20) {
+            resume.rawText = rawText;
+            resume.parsedData = parsedData;
+            resume.status = 'parsed';
+            await resume.save();
+          }
         } catch (pErr) {
           console.warn('Auto-parse before analyze notice:', pErr.message);
         }
       }
+    }
+
+    // If document has no readable text, stop early with a descriptive error instead of producing 0s
+    if (!resume.rawText || resume.rawText.trim().length < 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Resume document content could not be read. Please re-upload your resume (.pdf or .docx) to enable AI diagnostic evaluation.'
+      });
     }
 
     // Build comprehensive resume data object for Gemini
@@ -393,7 +398,8 @@ export const analyzeResume = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Resume analyzed successfully',
-      analysis: resume.aiScore
+      analysis: resume.aiScore,
+      parsedData: resume.parsedData
     });
   } catch (error) {
     console.error('Analyze resume error:', error.message);
