@@ -99,13 +99,20 @@ const ResumeUpload = () => {
       // If backend parsed immediately during upload, use parsedData directly
       if (data.resume?.parsedData && data.resume.status === "parsed") {
         setParsedData(data.resume.parsedData);
-      } else {
-        // Fallback auto-parse
-        setParsing(true);
-        const parseData = await parseResume(data.resume._id);
-        setParsedData(parseData.parsedData);
-        toast.success("Resume parsed successfully!");
-        setParsing(false);
+      } else if (data.resume?._id) {
+        // Fallback auto-parse with safe error boundary
+        try {
+          setParsing(true);
+          const parseData = await parseResume(data.resume._id);
+          if (parseData?.parsedData) {
+            setParsedData(parseData.parsedData);
+            toast.success("Resume parsed successfully!");
+          }
+        } catch (parseErr) {
+          console.warn("Auto-parse notice:", parseErr);
+        } finally {
+          setParsing(false);
+        }
       }
 
       await loadResumes();

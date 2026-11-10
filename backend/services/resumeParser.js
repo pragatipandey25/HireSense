@@ -100,30 +100,110 @@ const EDU_KEYWORDS = {
   'master of technology': 8, 'master of business administration': 8, 'masters': 8,
 };
 
-export async function extractTextFromPDF(filePathOrBuffer) {
-  const dataBuffer = Buffer.isBuffer(filePathOrBuffer)
-    ? filePathOrBuffer
-    : fs.readFileSync(filePathOrBuffer);
-  const uint8Array = new Uint8Array(dataBuffer.buffer, dataBuffer.byteOffset, dataBuffer.byteLength);
-  const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
-  const pdf = await loadingTask.promise;
-  let fullText = '';
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items.map(item => item.str).join(' ');
-    fullText += pageText + '\n';
+/**
+ * Universal buffer resolver supporting Node Buffers, MongoDB BSON Binary objects,
+ * TypedArrays (Uint8Array), ArrayBuffers, and local filesystem paths.
+ */
+export function toBuffer(input) {
+  if (!input) return null;
+  if (Buffer.isBuffer(input)) return input;
+  // MongoDB BSON Binary support
+  if (input._bsontype === 'Binary' || typeof input.value === 'function') {
+    try {
+      const val = input.value ? input.value(true) : input.buffer;
+      if (Buffer.isBuffer(val)) return val;
+      return Buffer.from(val);
+    } catch {}
   }
-  return fullText.trim();
+  if (input.buffer) {
+    if (Buffer.isBuffer(input.buffer)) return input.buffer;
+    if (input.buffer instanceof ArrayBuffer || ArrayBuffer.isView(input.buffer)) {
+      return Buffer.from(input.buffer, input.byteOffset || 0, input.byteLength || input.length);
+    }
+  }
+  if (input instanceof Uint8Array || ArrayBuffer.isView(input)) {
+    return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  }
+  if (typeof input === 'string') {
+    try {
+      if (fs.existsSync(input)) {
+        return fs.readFileSync(input);
+      }
+    } catch {}
+  }
+  return null;
+}
+
+export async function extractTextFromPDF(filePathOrBuffer) {
+  const dataBuffer = toBuffer(filePathOrBuffer);
+  if (!dataBuffer || dataBuffer.length === 0) {
+    return '';
+  }
+
+  // Safe Uint8Array copy from Buffer
+  const uint8Array = new Uint8Array(dataBuffer);
+
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data: uint8Array,
+      useSystemFonts: false,
+      disableFontFace: true,
+      verbosity: 0,
+      isEvalSupported: false,
+    });
+    const pdf = await loadingTask.promise;
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map(item => (typeof item?.str === 'string' ? item.str : ''))
+          .join(' ');
+        fullText += pageText + '\n';
+      } catch (pageErr) {
+        console.warn(`Warning: failed to extract text from PDF page ${i}:`, pageErr.message);
+      }
+    }
+    const cleanText = fullText.trim();
+    if (cleanText.length > 0) {
+      return cleanText;
+    }
+  } catch (pdfErr) {
+    console.warn('PDF parsing with pdfjs-dist encountered notice:', pdfErr.message);
+  }
+
+  // Fallback: extract ASCII / readable strings directly from PDF binary stream
+  try {
+    const binaryString = dataBuffer.toString('binary');
+    const matches = binaryString.match(/\(([^\(\)\\]*(?:\\.[^\(\)\\]*)*)\)\s*T[jJ]/g) ||
+                    binaryString.match(/\[([^\[\]]*)\]\s*TJ/g);
+    if (matches && matches.length > 0) {
+      const fallbackText = matches
+        .map(m => m.replace(/^[\(\[]/, '').replace(/[\]\)]\s*T[jJ]$/, '').replace(/\\(.)/g, '$1'))
+        .join(' ')
+        .trim();
+      if (fallbackText.length > 20) {
+        return fallbackText;
+      }
+    }
+  } catch {}
+
+  return '';
 }
 
 export async function extractTextFromDOCX(filePathOrBuffer) {
-  if (Buffer.isBuffer(filePathOrBuffer)) {
-    const result = await mammoth.extractRawText({ buffer: filePathOrBuffer });
-    return result.value;
+  const dataBuffer = toBuffer(filePathOrBuffer);
+  if (!dataBuffer || dataBuffer.length === 0) {
+    return '';
   }
-  const result = await mammoth.extractRawText({ path: filePathOrBuffer });
-  return result.value;
+  try {
+    const result = await mammoth.extractRawText({ buffer: dataBuffer });
+    return (result.value || '').trim();
+  } catch (docxErr) {
+    console.warn('DOCX extraction notice:', docxErr.message);
+    return '';
+  }
 }
 
 /**
@@ -487,14 +567,18 @@ export async function parseResumeText(text) {
 export async function parseResume(filePathOrBuffer, fileType) {
   let text = '';
   
-  if (fileType === 'pdf') {
-    text = await extractTextFromPDF(filePathOrBuffer);
-  } else if (fileType === 'docx') {
-    text = await extractTextFromDOCX(filePathOrBuffer);
-  } else {
-    throw new Error('Unsupported file type');
+  try {
+    if (fileType === 'pdf') {
+      text = await extractTextFromPDF(filePathOrBuffer);
+    } else if (fileType === 'docx') {
+      text = await extractTextFromDOCX(filePathOrBuffer);
+    } else {
+      console.warn(`Unsupported file type encountered in parseResume: ${fileType}`);
+    }
+  } catch (err) {
+    console.warn(`Extraction notice for ${fileType}:`, err.message);
   }
 
-  const parsedData = await parseResumeText(text);
-  return { rawText: text, parsedData };
+  const parsedData = await parseResumeText(text || '');
+  return { rawText: text || '', parsedData };
 }

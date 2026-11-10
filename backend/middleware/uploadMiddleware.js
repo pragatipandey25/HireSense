@@ -23,6 +23,13 @@ try {
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
+    try {
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+    } catch (dirErr) {
+      console.warn('Destination directory creation notice:', dirErr.message);
+    }
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
@@ -106,16 +113,20 @@ const validateFileIntegrity = (req, res, next) => {
   for (const file of filesToCheck) {
     const filePath = file.path;
     try {
-      if (!fs.existsSync(filePath)) {
+      let buffer = file.buffer || null;
+      if (!buffer && filePath && fs.existsSync(filePath)) {
+        buffer = fs.readFileSync(filePath);
+      }
+
+      if (!buffer) {
         continue;
       }
 
-      const buffer = fs.readFileSync(filePath);
       const detectedType = validateMagicBytes(buffer);
 
       if (!detectedType) {
         // Clean up invalid uploaded file
-        try { fs.unlinkSync(filePath); } catch {}
+        if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
         return res.status(400).json({
           success: false,
           message: `Invalid file format for "${file.originalname}". The file does not appear to be a valid PDF or DOCX document.`,
@@ -124,14 +135,14 @@ const validateFileIntegrity = (req, res, next) => {
 
       const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
       if (detectedType !== ext && !(ext === 'docx' && detectedType === 'docx')) {
-        try { fs.unlinkSync(filePath); } catch {}
+        if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
         return res.status(400).json({
           success: false,
           message: `File type mismatch for "${file.originalname}": detected ${detectedType.toUpperCase()} but extension is .${ext}.`,
         });
       }
     } catch (error) {
-      try { fs.unlinkSync(filePath); } catch {}
+      if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
       return res.status(500).json({
         success: false,
         message: `Failed to validate file integrity for ${file.originalname}.`,

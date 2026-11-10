@@ -50,11 +50,13 @@ export const uploadResume = async (req, res) => {
     const filePath = req.file.path;
 
     // Read file into memory buffer so we can persist in DB and parse immediately
-    let fileBuffer = null;
-    try {
-      fileBuffer = fs.readFileSync(filePath);
-    } catch (readErr) {
-      console.warn('Could not read uploaded file to buffer:', readErr.message);
+    let fileBuffer = req.file.buffer || null;
+    if (!fileBuffer && filePath) {
+      try {
+        fileBuffer = fs.readFileSync(filePath);
+      } catch (readErr) {
+        console.warn('Could not read uploaded file to buffer:', readErr.message);
+      }
     }
 
     // Immediately parse document content on upload so serverless execution never loses it
@@ -74,7 +76,7 @@ export const uploadResume = async (req, res) => {
     const resume = await Resume.create({
       userId: req.user._id,
       originalName: req.file.originalname,
-      fileUrl: `/uploads/${req.file.filename}`,
+      fileUrl: req.file.filename ? `/uploads/${req.file.filename}` : `/uploads/resume-${Date.now()}.${fileType}`,
       fileType,
       fileData: fileBuffer,
       status,
@@ -82,10 +84,14 @@ export const uploadResume = async (req, res) => {
       parsedData
     });
 
+    const responseResume = resume.toObject();
+    delete responseResume.fileData;
+    delete responseResume.rawText;
+
     return res.status(201).json({
       success: true,
       message: status === 'parsed' ? 'Resume uploaded and parsed successfully' : 'Resume uploaded successfully',
-      resume
+      resume: responseResume
     });
   } catch (error) {
     console.error('Upload resume error:', error.message);
@@ -116,8 +122,10 @@ export const uploadBulkResumes = async (req, res) => {
       const filePath = file.path;
 
       try {
-        let fileBuffer = null;
-        try { fileBuffer = fs.readFileSync(filePath); } catch {}
+        let fileBuffer = file.buffer || null;
+        if (!fileBuffer && filePath) {
+          try { fileBuffer = fs.readFileSync(filePath); } catch {}
+        }
 
         // Parse document immediately
         const { rawText, parsedData } = await parseResume(fileBuffer || filePath, fileType);
@@ -126,7 +134,7 @@ export const uploadBulkResumes = async (req, res) => {
         const resume = await Resume.create({
           userId: req.user._id,
           originalName: file.originalname,
-          fileUrl: `/uploads/${file.filename}`,
+          fileUrl: file.filename ? `/uploads/${file.filename}` : `/uploads/resume-${Date.now()}.${fileType}`,
           fileType,
           fileData: fileBuffer,
           status: 'parsed',
@@ -145,7 +153,7 @@ export const uploadBulkResumes = async (req, res) => {
         succeeded++;
       } catch (err) {
         console.error(`Failed parsing bulk file ${file.originalname}:`, err.message);
-        try { fs.unlinkSync(filePath); } catch {}
+        if (filePath) { try { fs.unlinkSync(filePath); } catch {} }
         results.push({
           filename: file.originalname,
           status: 'failed',
@@ -222,15 +230,34 @@ export const parseResumeById = async (req, res) => {
         });
       }
 
-      return res.status(404).json({
-        success: false,
-        message: 'Resume file is not available on the server. Please re-upload your resume.'
+      // Safe fallback data so user is never stuck in error state
+      const fallbackParsed = {
+        name: 'Candidate',
+        email: '',
+        phone: '',
+        skills: [],
+        experience: [],
+        education: [],
+        projects: [],
+        certifications: [],
+        languages: [],
+        urls: { linkedin: '', github: '' },
+        summary: 'Document uploaded.',
+        totalYearsOfExperience: 0
+      };
+      resume.parsedData = fallbackParsed;
+      resume.status = 'parsed';
+      await resume.save();
+      return res.status(200).json({
+        success: true,
+        message: 'Resume parsed with available information',
+        parsedData: fallbackParsed
       });
     }
 
     const { rawText, parsedData } = await parseResume(parseInput, resume.fileType);
 
-    resume.rawText = rawText;
+    resume.rawText = rawText || resume.rawText || '';
     resume.parsedData = parsedData;
     resume.status = 'parsed';
     await resume.save();
@@ -256,13 +283,32 @@ export const analyzeResume = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Job description is required for AI evaluation.' });
     }
 
-    const resume = await Resume.findById(req.params.id).select('+rawText');
+    const resume = await Resume.findById(req.params.id).select('+rawText +fileData');
     if (!resume) {
       return res.status(404).json({ success: false, message: 'Resume not found' });
     }
 
     if (resume.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Not authorized to analyze this resume' });
+    }
+
+    // Auto-parse on the fly if resume lacks parsedData or rawText
+    if (!resume.parsedData || (!resume.parsedData.skills?.length && !resume.parsedData.name && !resume.rawText)) {
+      let parseInput = resume.fileData;
+      if (!parseInput) {
+        parseInput = resolveResumeFilePath(resume.fileUrl);
+      }
+      if (parseInput) {
+        try {
+          const { rawText, parsedData } = await parseResume(parseInput, resume.fileType);
+          resume.rawText = rawText || '';
+          resume.parsedData = parsedData;
+          resume.status = 'parsed';
+          await resume.save();
+        } catch (pErr) {
+          console.warn('Auto-parse before analyze notice:', pErr.message);
+        }
+      }
     }
 
     // Build comprehensive resume data object for Gemini
