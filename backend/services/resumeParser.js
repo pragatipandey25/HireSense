@@ -100,8 +100,10 @@ const EDU_KEYWORDS = {
   'master of technology': 8, 'master of business administration': 8, 'masters': 8,
 };
 
-export async function extractTextFromPDF(filePath) {
-  const dataBuffer = fs.readFileSync(filePath);
+export async function extractTextFromPDF(filePathOrBuffer) {
+  const dataBuffer = Buffer.isBuffer(filePathOrBuffer)
+    ? filePathOrBuffer
+    : fs.readFileSync(filePathOrBuffer);
   const uint8Array = new Uint8Array(dataBuffer.buffer, dataBuffer.byteOffset, dataBuffer.byteLength);
   const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
   const pdf = await loadingTask.promise;
@@ -115,8 +117,12 @@ export async function extractTextFromPDF(filePath) {
   return fullText.trim();
 }
 
-export async function extractTextFromDOCX(filePath) {
-  const result = await mammoth.extractRawText({ path: filePath });
+export async function extractTextFromDOCX(filePathOrBuffer) {
+  if (Buffer.isBuffer(filePathOrBuffer)) {
+    const result = await mammoth.extractRawText({ buffer: filePathOrBuffer });
+    return result.value;
+  }
+  const result = await mammoth.extractRawText({ path: filePathOrBuffer });
   return result.value;
 }
 
@@ -478,13 +484,13 @@ export async function parseResumeText(text) {
   return parsed;
 }
 
-export async function parseResume(filePath, fileType) {
+export async function parseResume(filePathOrBuffer, fileType) {
   let text = '';
   
   if (fileType === 'pdf') {
-    text = await extractTextFromPDF(filePath);
+    text = await extractTextFromPDF(filePathOrBuffer);
   } else if (fileType === 'docx') {
-    text = await extractTextFromDOCX(filePath);
+    text = await extractTextFromDOCX(filePathOrBuffer);
   } else {
     throw new Error('Unsupported file type');
   }

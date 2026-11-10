@@ -95,19 +95,28 @@ const ResumeUpload = () => {
       toast.success("Resume uploaded successfully!");
       setFile(null);
       setSelectedResume(data.resume);
-      await loadResumes();
 
-      // Auto-parse after upload
-      setParsing(true);
-      const parseData = await parseResume(data.resume._id);
-      setParsedData(parseData.parsedData);
-      toast.success("Resume parsed successfully!");
-      setParsing(false);
+      // If backend parsed immediately during upload, use parsedData directly
+      if (data.resume?.parsedData && data.resume.status === "parsed") {
+        setParsedData(data.resume.parsedData);
+      } else {
+        // Fallback auto-parse
+        setParsing(true);
+        const parseData = await parseResume(data.resume._id);
+        setParsedData(parseData.parsedData);
+        toast.success("Resume parsed successfully!");
+        setParsing(false);
+      }
+
+      await loadResumes();
 
       const updated = await getResumes();
       const found = updated.resumes?.find((r) => r._id === data.resume._id);
       if (found) {
         setSelectedResume(found);
+        if (found.parsedData) {
+          setParsedData(found.parsedData);
+        }
       }
     } catch (error) {
       toast.error(error.response?.data?.message || "Resume upload failed");
@@ -132,6 +141,7 @@ const ResumeUpload = () => {
       const data = await analyzeResume(selectedResume._id, jobDescription);
       setAnalysis(data.analysis);
       toast.success("AI Analysis complete!");
+      await loadResumes();
     } catch (error) {
       toast.error(error.response?.data?.message || "AI Analysis failed");
     } finally {

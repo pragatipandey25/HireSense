@@ -2,14 +2,40 @@ import Resume from '../models/Resume.js';
 import Application from '../models/Application.js';
 import Job from '../models/Job.js';
 import Ranking from '../models/Ranking.js';
-import { parseResume } from '../services/resumeParser.js';
+import { parseResume, parseResumeText } from '../services/resumeParser.js';
 import { analyzeWithGemini } from '../services/aiService.js';
+import { uploadsDir } from '../middleware/uploadMiddleware.js';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * Robust helper to locate resume file on disk across local dev, containers, and Vercel serverless /tmp
+ */
+export const resolveResumeFilePath = (fileUrl) => {
+  if (!fileUrl) return null;
+  const filename = path.basename(fileUrl);
+  const candidates = [
+    path.join(uploadsDir, filename),
+    path.join(os.tmpdir(), 'hiresense-uploads', filename),
+    path.join(__dirname, '..', 'uploads', filename),
+    path.join(__dirname, '..', '..', 'uploads', filename),
+    path.join(process.cwd(), 'uploads', filename),
+    path.join(process.cwd(), 'backend', 'uploads', filename),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch {}
+  }
+  return null;
+};
 
 // @desc    Upload resume (Single file)
 // @route   POST /api/resumes/upload
@@ -19,19 +45,46 @@ export const uploadResume = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please select a resume file (.pdf or .docx) to upload.' });
     }
 
-    const fileType = req.file.originalname.toLowerCase().endsWith('.pdf') ? 'pdf' : 'docx';
+    const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');
+    const fileType = ext === 'pdf' ? 'pdf' : 'docx';
+    const filePath = req.file.path;
+
+    // Read file into memory buffer so we can persist in DB and parse immediately
+    let fileBuffer = null;
+    try {
+      fileBuffer = fs.readFileSync(filePath);
+    } catch (readErr) {
+      console.warn('Could not read uploaded file to buffer:', readErr.message);
+    }
+
+    // Immediately parse document content on upload so serverless execution never loses it
+    let rawText = '';
+    let parsedData = {};
+    let status = 'uploaded';
+
+    try {
+      const parseResult = await parseResume(fileBuffer || filePath, fileType);
+      rawText = parseResult.rawText || '';
+      parsedData = parseResult.parsedData || {};
+      status = 'parsed';
+    } catch (parseErr) {
+      console.error('Initial resume parse notice on upload:', parseErr.message);
+    }
 
     const resume = await Resume.create({
       userId: req.user._id,
       originalName: req.file.originalname,
       fileUrl: `/uploads/${req.file.filename}`,
       fileType,
-      status: 'uploaded'
+      fileData: fileBuffer,
+      status,
+      rawText,
+      parsedData
     });
 
     return res.status(201).json({
       success: true,
-      message: 'Resume uploaded successfully',
+      message: status === 'parsed' ? 'Resume uploaded and parsed successfully' : 'Resume uploaded successfully',
       resume
     });
   } catch (error) {
@@ -63,15 +116,19 @@ export const uploadBulkResumes = async (req, res) => {
       const filePath = file.path;
 
       try {
-        // Parse document
-        const { rawText, parsedData } = await parseResume(filePath, fileType);
+        let fileBuffer = null;
+        try { fileBuffer = fs.readFileSync(filePath); } catch {}
 
-        // Create resume record
+        // Parse document immediately
+        const { rawText, parsedData } = await parseResume(fileBuffer || filePath, fileType);
+
+        // Create resume record with persistent fileBuffer
         const resume = await Resume.create({
           userId: req.user._id,
           originalName: file.originalname,
           fileUrl: `/uploads/${file.filename}`,
           fileType,
+          fileData: fileBuffer,
           status: 'parsed',
           rawText,
           parsedData
@@ -119,7 +176,7 @@ export const uploadBulkResumes = async (req, res) => {
 // @route   POST /api/resumes/parse/:id
 export const parseResumeById = async (req, res) => {
   try {
-    const resume = await Resume.findById(req.params.id);
+    const resume = await Resume.findById(req.params.id).select('+fileData +rawText');
 
     if (!resume) {
       return res.status(404).json({ success: false, message: 'Resume not found' });
@@ -129,12 +186,49 @@ export const parseResumeById = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to parse this resume' });
     }
 
-    const filePath = path.join(__dirname, '..', resume.fileUrl);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ success: false, message: 'Resume file not found on server' });
+    // 1. If already parsed and has structured data, return immediately
+    if (resume.parsedData && (resume.parsedData.skills?.length > 0 || resume.parsedData.name || resume.rawText)) {
+      if (resume.status !== 'parsed' && resume.status !== 'analyzed') {
+        resume.status = 'parsed';
+        await resume.save();
+      }
+      return res.status(200).json({
+        success: true,
+        message: 'Resume parsed successfully',
+        parsedData: resume.parsedData
+      });
     }
 
-    const { rawText, parsedData } = await parseResume(filePath, resume.fileType);
+    // 2. Resolve parse input: binary buffer from DB first, then disk fallback
+    let parseInput = resume.fileData;
+    if (!parseInput) {
+      const diskPath = resolveResumeFilePath(resume.fileUrl);
+      if (diskPath) {
+        parseInput = diskPath;
+      }
+    }
+
+    // 3. Fallback: if rawText is stored, extract structured entities from rawText
+    if (!parseInput) {
+      if (resume.rawText && resume.rawText.trim().length > 0) {
+        const parsedData = await parseResumeText(resume.rawText);
+        resume.parsedData = parsedData;
+        resume.status = 'parsed';
+        await resume.save();
+        return res.status(200).json({
+          success: true,
+          message: 'Resume parsed successfully from stored text',
+          parsedData
+        });
+      }
+
+      return res.status(404).json({
+        success: false,
+        message: 'Resume file is not available on the server. Please re-upload your resume.'
+      });
+    }
+
+    const { rawText, parsedData } = await parseResume(parseInput, resume.fileType);
 
     resume.rawText = rawText;
     resume.parsedData = parsedData;
@@ -162,7 +256,7 @@ export const analyzeResume = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Job description is required for AI evaluation.' });
     }
 
-    const resume = await Resume.findById(req.params.id);
+    const resume = await Resume.findById(req.params.id).select('+rawText');
     if (!resume) {
       return res.status(404).json({ success: false, message: 'Resume not found' });
     }
@@ -171,8 +265,15 @@ export const analyzeResume = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to analyze this resume' });
     }
 
+    // Build comprehensive resume data object for Gemini
+    const parsedObj = resume.parsedData?.toObject ? resume.parsedData.toObject() : (resume.parsedData || {});
+    const resumeData = {
+      ...parsedObj,
+      rawText: resume.rawText || ''
+    };
+
     const analysis = await analyzeWithGemini(
-      resume.parsedData || { rawText: resume.rawText },
+      resumeData,
       jobDescription
     );
 
@@ -250,7 +351,7 @@ export const getResumeById = async (req, res) => {
 // @route   GET /api/resumes/download/:id
 export const downloadResume = async (req, res) => {
   try {
-    const resume = await Resume.findById(req.params.id);
+    const resume = await Resume.findById(req.params.id).select('+fileData');
     if (!resume) {
       return res.status(404).json({ success: false, message: 'Resume document not found' });
     }
@@ -261,7 +362,6 @@ export const downloadResume = async (req, res) => {
     if (req.user.role === 'admin' || resume.userId.toString() === req.user._id.toString()) {
       isAuthorized = true;
     } else if (req.user.role === 'employer') {
-      // Check if candidate applied to an active job owned by this employer
       const employerJobs = await Job.find({ employerId: req.user._id }).select('_id').lean();
       const jobIds = employerJobs.map(j => j._id);
 
@@ -284,12 +384,23 @@ export const downloadResume = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to download this candidate resume.' });
     }
 
-    const filePath = path.join(__dirname, '..', resume.fileUrl);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ success: false, message: 'Resume file does not exist on disk.' });
+    // 1. If binary fileData is in DB, stream it directly
+    if (resume.fileData && resume.fileData.length > 0) {
+      const contentType = resume.fileType === 'pdf'
+        ? 'application/pdf'
+        : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(resume.originalName)}"`);
+      return res.send(resume.fileData);
     }
 
-    return res.download(filePath, resume.originalName);
+    // 2. Fallback: Check on disk
+    const diskPath = resolveResumeFilePath(resume.fileUrl);
+    if (diskPath) {
+      return res.download(diskPath, resume.originalName);
+    }
+
+    return res.status(404).json({ success: false, message: 'Resume file is not available on the server. Please re-upload.' });
   } catch (error) {
     console.error('Download resume error:', error.message);
     return res.status(500).json({ success: false, message: 'Server error downloading resume.' });
@@ -310,9 +421,9 @@ export const deleteResume = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    const filePath = path.join(__dirname, '..', resume.fileUrl);
-    if (fs.existsSync(filePath)) {
-      try { fs.unlinkSync(filePath); } catch {}
+    const diskPath = resolveResumeFilePath(resume.fileUrl);
+    if (diskPath) {
+      try { fs.unlinkSync(diskPath); } catch {}
     }
 
     await resume.deleteOne();

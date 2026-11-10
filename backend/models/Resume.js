@@ -19,6 +19,10 @@ const resumeSchema = new mongoose.Schema({
     enum: ['pdf', 'docx'],
     required: true
   },
+  fileData: {
+    type: Buffer,
+    select: false
+  },
   parsedData: {
     name: { type: String, default: '' },
     email: { type: String, default: '' },

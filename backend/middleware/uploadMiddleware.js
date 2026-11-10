@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // On Vercel / serverless environments, the root filesystem is read-only. Use os.tmpdir().
-const uploadsDir = process.env.VERCEL
+export const uploadsDir = process.env.VERCEL
   ? path.join(os.tmpdir(), 'hiresense-uploads')
   : path.join(__dirname, '..', 'uploads');
 
