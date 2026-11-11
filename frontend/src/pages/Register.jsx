@@ -66,7 +66,9 @@ const Register = () => {
       const serverMsg =
         error.response?.data?.errors?.[0]?.msg ||
         error.response?.data?.message ||
-        error.message ||
+        (error.message === "Network Error"
+          ? "Unable to reach the server. Please ensure the backend is running on port 5000."
+          : error.message) ||
         "Registration failed. Please check your information.";
       setErrorMessage(serverMsg);
     } finally {

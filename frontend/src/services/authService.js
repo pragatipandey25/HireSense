@@ -1,7 +1,4 @@
-import axios from 'axios';
-
-const rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-const API_URL = `${rawApiUrl.replace(/\/+$/, '')}/auth`;
+import api from './api';
 
 export const registerUser = async (userData) => {
   const payload = {
@@ -10,8 +7,7 @@ export const registerUser = async (userData) => {
     name: (userData.name || '').trim(),
   };
 
-  const response = await axios.post(`${API_URL}/register`, payload, {
-    headers: { 'Content-Type': 'application/json' },
+  const response = await api.post('/auth/register', payload, {
     timeout: 15000,
   });
   return response.data;
@@ -23,8 +19,7 @@ export const loginUser = async (userData) => {
     password: userData.password,
   };
 
-  const response = await axios.post(`${API_URL}/login`, payload, {
-    headers: { 'Content-Type': 'application/json' },
+  const response = await api.post('/auth/login', payload, {
     timeout: 15000,
   });
   return response.data;

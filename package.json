@@ -5,6 +5,8 @@
   "description": "HireSense AI - Intelligent Recruitment & Candidate Screening Platform",
   "type": "module",
   "scripts": {
+    "client": "npm --prefix frontend run dev",
+    "server": "npm --prefix backend run dev",
     "build": "npm --prefix frontend run build",
     "lint": "npm --prefix frontend run lint",
     "test": "npm --prefix backend test"

@@ -1,10 +1,19 @@
 import axios from 'axios';
 import { isTokenExpired } from '../utils/jwt';
 
-const rawApiUrl =
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api');
-const API_URL = rawApiUrl.replace(/\/+$/, '');
+const getBaseApiUrl = () => {
+  const envUrl = (import.meta.env.VITE_API_URL || '').trim();
+  if (envUrl) {
+    let clean = envUrl.replace(/\/+$/, '');
+    if (!clean.endsWith('/api')) {
+      clean = `${clean}/api`;
+    }
+    return clean;
+  }
+  return import.meta.env.PROD ? '/api' : 'http://localhost:5000/api';
+};
+
+const API_URL = getBaseApiUrl();
 
 const api = axios.create({
   baseURL: API_URL,
@@ -17,6 +26,11 @@ const api = axios.create({
 // Request interceptor to add JWT token
 api.interceptors.request.use(
   (config) => {
+    // Skip token validation/attaching for public authentication endpoints
+    if (config.url?.includes('/auth/login') || config.url?.includes('/auth/register')) {
+      return config;
+    }
+
     const token = localStorage.getItem('token');
     if (token) {
       if (isTokenExpired(token)) {

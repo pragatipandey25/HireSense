@@ -1,5 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -18,6 +20,11 @@ import analysisRoutes from './routes/analysisRoutes.js';
 import { sanitizeAll } from './middleware/sanitizeMiddleware.js';
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Explicitly load backend/.env, falling back to process.cwd() .env
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 dotenv.config();
 
 // Initialize DB connection in background
