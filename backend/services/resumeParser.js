@@ -1,14 +1,18 @@
 import fs from 'fs';
+import zlib from 'zlib';
 import { createRequire } from 'module';
+import * as pdfParsePkg from 'pdf-parse';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import mammoth from 'mammoth';
 
 const require = createRequire(import.meta.url);
-let pdfParseModule = null;
-try {
-  pdfParseModule = require('pdf-parse');
-} catch (err) {
-  console.warn('pdf-parse require notice:', err.message);
+let pdfParseModule = pdfParsePkg;
+if (!pdfParseModule || (!pdfParseModule.PDFParse && typeof pdfParseModule.default !== 'function')) {
+  try {
+    pdfParseModule = require('pdf-parse');
+  } catch (err) {
+    console.warn('pdf-parse require notice:', err.message);
+  }
 }
 
 // Expanded skills list — 150+ technologies
@@ -143,6 +147,82 @@ export function toBuffer(input) {
   return null;
 }
 
+/**
+ * Zero-dependency, pure Node.js FlateDecode stream decompressor and text extractor.
+ * Extracts text and spacing from /Filter /FlateDecode PDF content streams in <10ms.
+ */
+export function extractTextFlateFast(buffer) {
+  if (!buffer || buffer.length === 0) return '';
+  let pos = 0;
+  const pageLines = [];
+
+  while (pos < buffer.length) {
+    const streamStart = buffer.indexOf('stream', pos);
+    if (streamStart === -1) break;
+
+    let dataStart = streamStart + 6;
+    if (buffer[dataStart] === 0x0d && buffer[dataStart + 1] === 0x0a) dataStart += 2;
+    else if (buffer[dataStart] === 0x0a) dataStart += 1;
+
+    const streamEnd = buffer.indexOf('endstream', dataStart);
+    if (streamEnd === -1) break;
+
+    const slice = buffer.subarray(dataStart, streamEnd);
+    pos = streamEnd + 9;
+
+    let decompressed = null;
+    try {
+      decompressed = zlib.inflateSync(slice).toString('latin1');
+    } catch {
+      try {
+        decompressed = zlib.inflateRawSync(slice).toString('latin1');
+      } catch {}
+    }
+
+    if (!decompressed) continue;
+    if (decompressed.includes('/FontFile') || decompressed.includes('FontName')) continue;
+    if (!decompressed.includes('Tj') && !decompressed.includes('TJ')) continue;
+
+    let idx = 0;
+    while (idx < decompressed.length) {
+      const tjIdx = decompressed.indexOf('] TJ', idx);
+      const tjLowerIdx = tjIdx === -1 ? decompressed.indexOf(']TJ', idx) : tjIdx;
+
+      if (tjLowerIdx === -1) {
+        const singleTj = decompressed.indexOf('Tj', idx);
+        if (singleTj === -1) break;
+        const parenStart = decompressed.lastIndexOf('(', singleTj);
+        const parenEnd = decompressed.lastIndexOf(')', singleTj);
+        if (parenStart !== -1 && parenEnd > parenStart) {
+          pageLines.push(decompressed.substring(parenStart + 1, parenEnd).replace(/\\([()\\])/g, '$1'));
+        }
+        idx = singleTj + 2;
+        continue;
+      }
+
+      const openBracket = decompressed.lastIndexOf('[', tjLowerIdx);
+      if (openBracket !== -1 && openBracket >= idx) {
+        const inner = decompressed.substring(openBracket + 1, tjLowerIdx);
+        const tokenRegex = /\(([^)]*)\)|(-?\d+)/g;
+        let tm;
+        let line = '';
+        while ((tm = tokenRegex.exec(inner)) !== null) {
+          if (tm[1] !== undefined) {
+            line += tm[1].replace(/\\([()\\])/g, '$1');
+          } else if (tm[2] !== undefined && parseInt(tm[2], 10) < -120) {
+            line += ' ';
+          }
+        }
+        if (line.trim()) pageLines.push(line.trim());
+      }
+      idx = tjLowerIdx + 4;
+    }
+  }
+
+  const result = pageLines.join('\n').trim();
+  return result.length > 20 ? result : '';
+}
+
 export async function extractTextFromPDF(filePathOrBuffer) {
   const dataBuffer = toBuffer(filePathOrBuffer);
   if (!dataBuffer || dataBuffer.length === 0) {
@@ -154,18 +234,22 @@ export async function extractTextFromPDF(filePathOrBuffer) {
   // Strategy 1: pdf-parse (pure Node.js / serverless-compatible)
   if (pdfParseModule) {
     try {
-      if (typeof pdfParseModule.PDFParse === 'function') {
-        const parser = new pdfParseModule.PDFParse(uint8Array);
-        await parser.load();
-        const res = await parser.getText();
-        const extracted = res?.text || (res?.pages ? res.pages.map(p => p.text).join('\n') : '');
-        if (extracted && extracted.trim().length > 20) {
-          return extracted.trim();
-        }
-      } else if (typeof pdfParseModule === 'function') {
-        const res = await pdfParseModule(dataBuffer);
-        if (res?.text && res.text.trim().length > 20) {
-          return res.text.trim();
+      const PDFParseClass = pdfParseModule.PDFParse || pdfParseModule.default?.PDFParse || (typeof pdfParseModule.default === 'function' ? pdfParseModule.default : (typeof pdfParseModule === 'function' ? pdfParseModule : null));
+      if (typeof PDFParseClass === 'function') {
+        try {
+          const parser = new PDFParseClass(uint8Array);
+          await parser.load();
+          const res = await parser.getText();
+          const extracted = res?.text || (res?.pages ? res.pages.map(p => p.text).join('\n') : '');
+          if (extracted && extracted.trim().length > 20) {
+            return extracted.trim();
+          }
+        } catch {
+          // If not constructor, try function invocation
+          const res = await PDFParseClass(dataBuffer);
+          if (res?.text && res.text.trim().length > 20) {
+            return res.text.trim();
+          }
         }
       }
     } catch (pdfParseErr) {
@@ -173,7 +257,17 @@ export async function extractTextFromPDF(filePathOrBuffer) {
     }
   }
 
-  // Strategy 2: pdfjs-dist coordinate-aware text extractor
+  // Strategy 2: Zero-dependency Node.js zlib stream extractor (runs anywhere, 0 dependencies)
+  try {
+    const zlibText = extractTextFlateFast(dataBuffer);
+    if (zlibText && zlibText.trim().length > 20) {
+      return zlibText.trim();
+    }
+  } catch (zlibErr) {
+    console.warn('Zlib stream extraction notice:', zlibErr.message);
+  }
+
+  // Strategy 3: pdfjs-dist coordinate-aware text extractor
   try {
     const loadingTask = pdfjsLib.getDocument({
       data: uint8Array,
@@ -227,7 +321,7 @@ export async function extractTextFromPDF(filePathOrBuffer) {
     console.warn('PDF parsing with pdfjs-dist encountered notice:', pdfErr.message);
   }
 
-  // Strategy 3: extract ASCII / readable strings directly from PDF binary stream
+  // Strategy 4: extract ASCII / readable strings directly from PDF binary stream
   try {
     const binaryString = dataBuffer.toString('binary');
     const matches = binaryString.match(/\(([^\(\)\\]*(?:\\.[^\(\)\\]*)*)\)\s*T[jJ]/g) ||
