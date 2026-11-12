@@ -1,17 +1,36 @@
 import fs from 'fs';
 import zlib from 'zlib';
 import { createRequire } from 'module';
-import * as pdfParsePkg from 'pdf-parse';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import mammoth from 'mammoth';
 
 const require = createRequire(import.meta.url);
-let pdfParseModule = pdfParsePkg;
-if (!pdfParseModule || (!pdfParseModule.PDFParse && typeof pdfParseModule.default !== 'function')) {
+
+let cachedPdfParse = null;
+async function getPdfParse() {
+  if (cachedPdfParse) return cachedPdfParse;
   try {
-    pdfParseModule = require('pdf-parse');
+    cachedPdfParse = await import('pdf-parse');
+    return cachedPdfParse;
+  } catch {
+    try {
+      cachedPdfParse = require('pdf-parse');
+      return cachedPdfParse;
+    } catch (err) {
+      console.warn('pdf-parse load notice:', err.message);
+      return null;
+    }
+  }
+}
+
+let cachedPdfJs = null;
+async function getPdfJsLib() {
+  if (cachedPdfJs) return cachedPdfJs;
+  try {
+    cachedPdfJs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    return cachedPdfJs;
   } catch (err) {
-    console.warn('pdf-parse require notice:', err.message);
+    console.warn('pdfjs-dist load notice:', err.message);
+    return null;
   }
 }
 
@@ -232,6 +251,7 @@ export async function extractTextFromPDF(filePathOrBuffer) {
   const uint8Array = new Uint8Array(dataBuffer);
 
   // Strategy 1: pdf-parse (pure Node.js / serverless-compatible)
+  const pdfParseModule = await getPdfParse();
   if (pdfParseModule) {
     try {
       const PDFParseClass = pdfParseModule.PDFParse || pdfParseModule.default?.PDFParse || (typeof pdfParseModule.default === 'function' ? pdfParseModule.default : (typeof pdfParseModule === 'function' ? pdfParseModule : null));
@@ -269,53 +289,56 @@ export async function extractTextFromPDF(filePathOrBuffer) {
 
   // Strategy 3: pdfjs-dist coordinate-aware text extractor
   try {
-    const loadingTask = pdfjsLib.getDocument({
-      data: uint8Array,
-      useSystemFonts: false,
-      disableFontFace: true,
-      verbosity: 0,
-      isEvalSupported: false,
-    });
-    const pdf = await loadingTask.promise;
-    let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      try {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        
-        let smartLines = [];
-        let currentLine = '';
-        let lastY = null;
+    const pdfjsLib = await getPdfJsLib();
+    if (pdfjsLib) {
+      const loadingTask = pdfjsLib.getDocument({
+        data: uint8Array,
+        useSystemFonts: false,
+        disableFontFace: true,
+        verbosity: 0,
+        isEvalSupported: false,
+      });
+      const pdf = await loadingTask.promise;
+      let fullText = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        try {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          
+          let smartLines = [];
+          let currentLine = '';
+          let lastY = null;
 
-        for (const item of textContent.items) {
-          const str = typeof item?.str === 'string' ? item.str : '';
-          if (!str && !item.hasEOL) continue;
+          for (const item of textContent.items) {
+            const str = typeof item?.str === 'string' ? item.str : '';
+            if (!str && !item.hasEOL) continue;
 
-          const y = item.transform ? Math.round(item.transform[5]) : null;
-          // When vertical Y-coordinate changes by more than 3 units, it's a new line
-          if (lastY !== null && y !== null && Math.abs(y - lastY) > 3) {
-            if (currentLine.trim()) smartLines.push(currentLine.trim());
-            currentLine = '';
+            const y = item.transform ? Math.round(item.transform[5]) : null;
+            // When vertical Y-coordinate changes by more than 3 units, it's a new line
+            if (lastY !== null && y !== null && Math.abs(y - lastY) > 3) {
+              if (currentLine.trim()) smartLines.push(currentLine.trim());
+              currentLine = '';
+            }
+            currentLine += (currentLine ? ' ' : '') + str;
+            if (item.hasEOL) {
+              if (currentLine.trim()) smartLines.push(currentLine.trim());
+              currentLine = '';
+              lastY = null;
+              continue;
+            }
+            lastY = y;
           }
-          currentLine += (currentLine ? ' ' : '') + str;
-          if (item.hasEOL) {
-            if (currentLine.trim()) smartLines.push(currentLine.trim());
-            currentLine = '';
-            lastY = null;
-            continue;
-          }
-          lastY = y;
+          if (currentLine.trim()) smartLines.push(currentLine.trim());
+
+          fullText += smartLines.join('\n') + '\n';
+        } catch (pageErr) {
+          console.warn(`Warning: failed to extract text from PDF page ${i}:`, pageErr.message);
         }
-        if (currentLine.trim()) smartLines.push(currentLine.trim());
-
-        fullText += smartLines.join('\n') + '\n';
-      } catch (pageErr) {
-        console.warn(`Warning: failed to extract text from PDF page ${i}:`, pageErr.message);
       }
-    }
-    const cleanText = fullText.trim();
-    if (cleanText.length > 20) {
-      return cleanText;
+      const cleanText = fullText.trim();
+      if (cleanText.length > 20) {
+        return cleanText;
+      }
     }
   } catch (pdfErr) {
     console.warn('PDF parsing with pdfjs-dist encountered notice:', pdfErr.message);
