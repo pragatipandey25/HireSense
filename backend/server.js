@@ -153,13 +153,34 @@ app.use(sanitizeAll);
 // 6. HTTP Parameter Pollution protection
 app.use(hpp());
 
-// 7. Ensure DB connection is active before processing requests (critical for serverless cold starts)
+// Fast Healthcheck / API status (does NOT block on database connection)
+app.get(['/', '/api', '/api/health'], (req, res) => {
+  const dbStates = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting' };
+  const currentDbState = dbStates[mongoose.connection.readyState] || 'unknown';
+
+  res.status(200).json({
+    status: 'ok',
+    app: 'HireSense AI',
+    tagline: 'Smarter Screening. Better Hiring.',
+    message: 'HireSense AI API is running...',
+    version: '2.0.0',
+    database: currentDbState,
+    hasMongoUri: Boolean(process.env.MONGO_URI),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// 7. Ensure DB connection is active before processing database routes
 app.use(async (req, res, next) => {
-  if (mongoose.connection.readyState < 1) {
+  if (mongoose.connection.readyState !== 1) {
     try {
       await connectDB();
-    } catch {
-      // Let routes or error handler catch if connection cannot be established
+    } catch (err) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connection failed. Please verify MONGO_URI in your Vercel Environment Variables and ensure MongoDB Atlas Network Access has 0.0.0.0/0 whitelisted.',
+        error: process.env.NODE_ENV !== 'production' ? err.message : undefined
+      });
     }
   }
   next();
@@ -182,16 +203,6 @@ app.use('/applications', applicationRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use('/admin', adminRoutes);
 app.use('/analysis', analysisRoutes);
-
-app.get(['/', '/api'], (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    app: 'HireSense AI',
-    tagline: 'Smarter Screening. Better Hiring.',
-    message: 'HireSense AI API is running...',
-    version: '2.0.0'
-  });
-});
 
 // Error handling middleware (must be after routes)
 app.use(notFound);

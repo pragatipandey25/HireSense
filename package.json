@@ -4,6 +4,10 @@
   "private": true,
   "description": "HireSense AI - Intelligent Recruitment & Candidate Screening Platform",
   "type": "module",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
   "scripts": {
     "client": "npm --prefix frontend run dev",
     "server": "npm --prefix backend run dev",
