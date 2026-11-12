@@ -27,10 +27,12 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 dotenv.config();
 
-// Initialize DB connection in background
-connectDB().catch((err) => {
-  console.warn('Initial DB connection attempt:', err.message);
-});
+// Initialize DB connection in background for local/container dev
+if (!process.env.VERCEL) {
+  connectDB().catch((err) => {
+    console.warn('Initial DB connection attempt:', err.message);
+  });
+}
 
 // Optional: Seed initial admin account ONLY if explicit env credentials are provided
 mongoose.connection.once('open', async () => {
